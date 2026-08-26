@@ -1,0 +1,173 @@
+@import "tailwindcss";
+@plugin "daisyui";
+
+@theme {
+  /* Surfaces — layered elevation */
+  --color-base: #0f172a;
+  --color-surface: #1e293b;
+  --color-elevated: #334155;
+  --color-hover: #3e4c66;
+  --color-border: #475569;
+  --color-border-subtle: #334155;
+
+  /* Text */
+  --color-ink: #f1f5f9;
+  --color-ink-secondary: #94a3b8;
+  --color-ink-muted: #64748b;
+
+  /* Accent */
+  --color-accent: #818cf8;
+  --color-accent-hover: #6366f1;
+
+  /* Column accents */
+  --color-col-backlog: #64748b;
+  --color-col-ongoing: #38bdf8;
+  --color-col-done: #34d399;
+
+  /* Priority */
+  --color-p-low: #3b82f6;
+  --color-p-med: #eab308;
+  --color-p-high: #f97316;
+  --color-p-urgent: #ef4444;
+
+  --radius-card: 8px;
+  --radius-list: 12px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--color-ink);
+  background: var(--color-base);
+  -webkit-font-smoothing: antialiased;
+  /* Tell the browser this app is dark so native form controls (select
+     popups, date pickers, scrollbars) render with a dark palette instead
+     of the OS default light — keeps dropdown option text visible. */
+  color-scheme: dark;
+}
+
+/* Native <select> option list popup — some engines ignore color-scheme
+   for the popup itself, so force theme colors on <option> too. */
+select option {
+  background: var(--color-surface);
+  color: var(--color-ink);
+}
+select option:checked,
+select option:hover {
+  background: var(--color-accent);
+  color: var(--color-base);
+}
+
+.board-scroll::-webkit-scrollbar {
+  height: 10px;
+  width: 10px;
+}
+.board-scroll::-webkit-scrollbar-thumb {
+  background: var(--color-border-subtle);
+  border-radius: 8px;
+}
+.board-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border);
+}
+.board-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Card grid inside a column — max 2 columns, collapses to 1 when narrow. */
+.card-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.5rem;
+}
+@container (min-width: 360px) {
+  .card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Markdown render — compact prose for card previews and edit preview. */
+.md-preview p { margin: 0 0 0.25rem; }
+.md-preview p:last-child { margin-bottom: 0; }
+.md-preview ul,
+.md-preview ol {
+  margin: 0 0 0.25rem;
+  padding-left: 1.1rem;
+}
+.md-preview li { margin: 0; }
+.md-preview h1,
+.md-preview h2,
+.md-preview h3,
+.md-preview h4,
+.md-preview h5,
+.md-preview h6 {
+  font-size: 0.8rem;
+  font-weight: 700;
+  margin: 0.25rem 0 0.125rem;
+}
+.md-preview code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.7rem;
+  background: rgba(148, 163, 184, 0.18);
+  padding: 0 0.2rem;
+  border-radius: 3px;
+}
+.md-preview pre {
+  margin: 0.25rem 0;
+  padding: 0.4rem;
+  background: rgba(15, 23, 42, 0.6);
+  border-radius: 4px;
+  overflow-x: auto;
+}
+.md-preview pre code {
+  background: transparent;
+  padding: 0;
+}
+.md-preview blockquote {
+  margin: 0.25rem 0;
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--color-border-subtle);
+  color: var(--color-ink-muted);
+}
+.md-preview a {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
+.trello-card {
+  transition: background 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+}
+.trello-card:hover {
+  background: var(--color-hover);
+  border-color: var(--color-border);
+}
+
+.add-link {
+  color: var(--color-ink-secondary);
+}
+.add-link:hover {
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--color-ink);
+}
+
+.priority-strip {
+  height: 4px;
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+}
+
+/* Column accent — thin top bar encoding column identity */
+.col-accent {
+  height: 3px;
+  border-radius: var(--radius-list) var(--radius-list) 0 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trello-card {
+    transition: none;
+  }
+}
