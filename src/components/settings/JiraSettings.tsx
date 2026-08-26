@@ -24,7 +24,7 @@ interface JiraProject {
 
 interface JiraSettingsProps {
   instance: SourceInstance;
-  onSave: (config: Record<string, unknown>, statusMapping: StatusMapping) => void;
+  onSave: (config: Record<string, unknown>, statusMapping: StatusMapping) => Promise<void> | void;
 }
 
 /** Split a comma-separated status list: trim each entry, drop empties. */
@@ -56,6 +56,7 @@ export default function JiraSettings(props: JiraSettingsProps) {
   const [ongoingStatuses, setOngoingStatuses] = createSignal('');
   const [doneStatuses, setDoneStatuses] = createSignal('');
   const [error, setError] = createSignal<string | null>(null);
+  const [saving, setSaving] = createSignal(false);
   const [projects, setProjects] = createSignal<JiraProject[]>([]);
   const [projectsLoading, setProjectsLoading] = createSignal(false);
   const [preview, setPreview] = createSignal('');
@@ -145,7 +146,7 @@ export default function JiraSettings(props: JiraSettingsProps) {
     setDoneStatuses(DEFAULT_STATUS_MAPPING.done.join(', '));
   }
 
-  function handleSave() {
+  async function handleSave() {
     const mapping: StatusMapping = {
       backlog: splitStatuses(backlogStatuses()),
       ongoing: splitStatuses(ongoingStatuses()),
@@ -157,13 +158,20 @@ export default function JiraSettings(props: JiraSettingsProps) {
       return;
     }
     setError(null);
-    const config: Record<string, unknown> = {
-      base_url: baseUrl().trim(),
-      email: email().trim(),
-      token: token().trim(),
-      jql_parts: finalParts,
-    };
-    safeProps.onSave?.(config, mapping);
+    setSaving(true);
+    try {
+      const config: Record<string, unknown> = {
+        base_url: baseUrl().trim(),
+        email: email().trim(),
+        token: token().trim(),
+        jql_parts: finalParts,
+      };
+      await safeProps.onSave?.(config, mapping);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
   }
 
   const INPUT =
@@ -177,11 +185,14 @@ export default function JiraSettings(props: JiraSettingsProps) {
         </label>
         <input
           id="jira-base-url"
-          type="text"
+          type="url"
+          inputmode="url"
+          name="base_url"
+          autocomplete="off"
           class={INPUT}
           value={baseUrl()}
           onInput={(e) => setBaseUrl(e.currentTarget.value)}
-          placeholder="your-domain.atlassian.net"
+          placeholder="your-domain.atlassian.net…"
         />
       </div>
 
@@ -191,10 +202,15 @@ export default function JiraSettings(props: JiraSettingsProps) {
         </label>
         <input
           id="jira-email"
-          type="text"
+          type="email"
+          inputmode="email"
+          name="email"
+          autocomplete="email"
+          spellCheck={false}
           class={INPUT}
           value={email()}
           onInput={(e) => setEmail(e.currentTarget.value)}
+          placeholder="you@example.com…"
         />
       </div>
 
@@ -205,9 +221,13 @@ export default function JiraSettings(props: JiraSettingsProps) {
         <input
           id="jira-token"
           type="password"
+          name="token"
+          autocomplete="off"
+          spellCheck={false}
           class={INPUT}
           value={token()}
           onInput={(e) => setToken(e.currentTarget.value)}
+          placeholder="API token…"
         />
       </div>
 
@@ -225,10 +245,12 @@ export default function JiraSettings(props: JiraSettingsProps) {
                   <input
                     id="jira-project"
                     type="text"
+                    name="project"
+                    autocomplete="off"
                     class={INPUT}
                     value={jqlParts().project}
                     onInput={(e) => patchParts('project', e.currentTarget.value)}
-                    placeholder="SCRUM"
+                    placeholder="SCRUM…"
                   />
                 }
               >
@@ -272,10 +294,12 @@ export default function JiraSettings(props: JiraSettingsProps) {
             <Show when={jqlParts().assigneeMode === 'specific'}>
               <input
                 type="text"
+                name="assignee"
+                autocomplete="off"
                 class={`mt-2 ${INPUT}`}
                 value={jqlParts().assignee}
                 onInput={(e) => patchParts('assignee', e.currentTarget.value)}
-                placeholder="username or email"
+                placeholder="username or email…"
               />
             </Show>
           </div>
@@ -297,10 +321,12 @@ export default function JiraSettings(props: JiraSettingsProps) {
             <Show when={jqlParts().statusMode === 'specific'}>
               <input
                 type="text"
+                name="statuses"
+                autocomplete="off"
                 class={`mt-2 ${INPUT}`}
                 value={statusesText()}
                 onInput={(e) => setStatusesText(e.currentTarget.value)}
-                placeholder="To Do, In Progress"
+                placeholder="To Do, In Progress…"
               />
             </Show>
           </div>
@@ -339,7 +365,7 @@ export default function JiraSettings(props: JiraSettingsProps) {
 
           <div>
             <span class="text-xs font-semibold text-ink-secondary">Preview</span>
-            <code class="font-mono text-xs text-ink bg-base p-2 rounded block mt-1 break-all">
+            <code class="font-mono text-xs text-ink bg-base p-2 rounded block mt-1 break-all" aria-live="polite">
               {previewLoading() ? '…' : (preview() || '(empty)')}
             </code>
           </div>
@@ -358,6 +384,8 @@ export default function JiraSettings(props: JiraSettingsProps) {
             <input
               id="jira-mapping-backlog"
               type="text"
+              name="mapping_backlog"
+              autocomplete="off"
               class={INPUT}
               value={backlogStatuses()}
               onInput={(e) => setBacklogStatuses(e.currentTarget.value)}
@@ -370,6 +398,8 @@ export default function JiraSettings(props: JiraSettingsProps) {
             <input
               id="jira-mapping-ongoing"
               type="text"
+              name="mapping_ongoing"
+              autocomplete="off"
               class={INPUT}
               value={ongoingStatuses()}
               onInput={(e) => setOngoingStatuses(e.currentTarget.value)}
@@ -382,6 +412,8 @@ export default function JiraSettings(props: JiraSettingsProps) {
             <input
               id="jira-mapping-done"
               type="text"
+              name="mapping_done"
+              autocomplete="off"
               class={INPUT}
               value={doneStatuses()}
               onInput={(e) => setDoneStatuses(e.currentTarget.value)}
@@ -397,15 +429,16 @@ export default function JiraSettings(props: JiraSettingsProps) {
         </div>
       </fieldset>
 
-      {error() && <p class="text-sm text-p-urgent" role="alert">{error()}</p>}
+      {error() && <p class="text-sm text-p-urgent" role="alert" aria-live="polite">{error()}</p>}
 
       <div class="flex gap-2 justify-end">
         <button
           type="button"
-          class="px-3 py-1.5 text-sm font-medium rounded bg-accent hover:bg-accent-hover text-base transition-colors"
-          onClick={handleSave}
+          class="px-3 py-1.5 text-sm font-medium rounded bg-accent hover:bg-accent-hover text-base transition-colors disabled:opacity-50"
+          disabled={saving()}
+          onClick={() => void handleSave()}
         >
-          Save
+          {saving() ? 'Saving…' : 'Save'}
         </button>
       </div>
     </div>
