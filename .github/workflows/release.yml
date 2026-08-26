@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Merge to releases + tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Compute next version
+        id: bump
+        run: |
+          out=$(deno run --allow-run .github/scripts/bump_version.ts)
+          echo "$out"
+          next=$(echo "$out" | sed -n 's/^next=//p')
+          kind=$(echo "$out" | sed -n 's/^bump=//p')
+          echo "next=$next" >> "$GITHUB_OUTPUT"
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"
+
+      - name: Stop if no bump
+        if: steps.bump.outputs.kind == 'none'
+        run: echo "No conventional commits since last tag. Skipping."
+
+      - name: Configure git
+        if: steps.bump.outputs.kind != 'none'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge main into releases
+        if: steps.bump.outputs.kind != 'none'
+        run: |
+          if git ls-remote --heads origin releases | grep -q releases; then
+            git fetch origin releases
+            git checkout releases
+            git merge --no-ff main -m "chore(release): merge main for ${{ steps.bump.outputs.next }}"
+          else
+            git checkout -b releases
+          fi
+
+      - name: Bump version files
+        if: steps.bump.outputs.kind != 'none'
+        run: |
+          v="${{ steps.bump.outputs.next }}"
+          sed -i "s/^version = \".*\"/version = \"$v\"/" src-tauri/Cargo.toml
+          sed -i "s/\"version\": \".*\"/\"version\": \"$v\"/" package.json
+          sed -i "s/\"version\": \".*\"/\"version\": \"$v\"/" src-tauri/tauri.conf.json
+          git add src-tauri/Cargo.toml package.json src-tauri/tauri.conf.json
+          git commit -m "chore(release): v$v" || echo "nothing to commit"
+
+      - name: Tag
+        if: steps.bump.outputs.kind != 'none'
+        run: |
+          v="${{ steps.bump.outputs.next }}"
+          git tag "v$v"
+          git push origin releases
+          git push origin "v$v"
