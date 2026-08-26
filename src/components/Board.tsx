@@ -1,5 +1,5 @@
-import { For, createSignal, onMount } from 'solid-js';
-import { DragDropContext, DragDropSensors } from '@thisbeyond/solid-dnd';
+import { For, Show, createSignal, onMount } from 'solid-js';
+import { DragDropContext, DragDropSensors, DragOverlay, useDragDropContext } from '@thisbeyond/solid-dnd';
 import type { ColumnId, KanbanCard, Priority, TreeSource } from '../types.ts';
 import { COLUMNS } from '../columns.ts';
 import {
@@ -24,18 +24,46 @@ interface DragEndEvent {
   droppable?: { data?: ColumnId } | null;
 }
 
+const PRIORITY_STRIP: Record<Priority, string> = {
+  low: 'bg-p-low',
+  medium: 'bg-p-med',
+  high: 'bg-p-high',
+  urgent: 'bg-p-urgent',
+};
+
+/** Portals the dragged card to document.body so it paints above all columns. */
+function CardDragOverlay() {
+  const [state] = useDragDropContext() as [
+    { active: { draggable: string | null }; draggables: Record<string, { data?: KanbanCard }> },
+  ];
+  const activeCard = () => {
+    const id = state.active.draggable;
+    return id ? state.draggables[id]?.data : undefined;
+  };
+  return (
+    <DragOverlay class="trello-card is-dragging bg-elevated rounded-[var(--radius-card)] border border-border-subtle shadow-2xl">
+      <Show when={activeCard()}>
+        {(card) => (
+          <>
+            <div class={`priority-strip ${PRIORITY_STRIP[card().priority]}`} aria-hidden="true" />
+            <div class="px-3 py-2">
+              <p class="text-sm text-ink leading-snug">{card().title}</p>
+            </div>
+          </>
+        )}
+      </Show>
+    </DragOverlay>
+  );
+}
+
 export default function Board() {
   const [cards, setCards] = createSignal<KanbanCard[]>([]);
   const [treeSources, setTreeSources] = createSignal<TreeSource[]>([]);
-  const [sourceLabels, setSourceLabels] = createSignal<Record<string, string>>({});
-  const [sourceEditors, setSourceEditors] = createSignal<Record<string, string | undefined>>({});
 
   loadCards = async () => {
     setCards(await listCards());
     const sources = await listTreeSources();
     setTreeSources(sources);
-    setSourceLabels(Object.fromEntries(sources.map((s) => [s.path, s.label])));
-    setSourceEditors(Object.fromEntries(sources.map((s) => [s.path, s.editorCommand])));
   };
   onMount(() => {
     void loadCards?.();
@@ -46,12 +74,12 @@ export default function Board() {
     setCards((prev) => [...prev, card]);
   }
 
-  async function editCard(id: string, title: string, description: string, priority: Priority, sourcePath: string) {
-    await updateCard(id, { title, description, priority, sourcePath }); // db first
+  async function editCard(id: string, title: string, description: string, priority: Priority, treeSourceId: string) {
+    await updateCard(id, { title, description, priority, treeSourceId });
     setCards((prev) =>
       prev.map((c) =>
         c.id === id
-          ? { ...c, title, description, priority, sourcePath: sourcePath || undefined, updatedAt: new Date().toISOString() }
+          ? { ...c, title, description, priority, treeSourceId: treeSourceId || undefined, updatedAt: new Date().toISOString() }
           : c,
       ),
     );
@@ -87,23 +115,23 @@ export default function Board() {
   return (
     <DragDropContext onDragEnd={handleDragEnd}>
       <DragDropSensors>
-        <main class="board-scroll flex-1 flex gap-3 p-3 overflow-y-auto bg-base">
+        <main id="main-board" class="board-scroll flex-1 flex gap-3 p-3 overflow-y-auto bg-base">
           <For each={COLUMNS}>
             {(column) => (
               <Column
                 column={column}
                 cards={cards}
                 treeSources={treeSources}
-                sourceLabels={sourceLabels}
-                sourceEditors={sourceEditors}
                 onAdd={(title) => void addCard(title, column.id)}
                 onEdit={editCard}
                 onDelete={deleteCard}
+                onMove={(id, col) => void moveCardTo(id, col, endPosition(col))}
               />
             )}
           </For>
         </main>
       </DragDropSensors>
+      <CardDragOverlay />
     </DragDropContext>
   );
 }
