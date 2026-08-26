@@ -16,14 +16,14 @@ fn row_to_card_row(row: &rusqlite::Row) -> rusqlite::Result<CardRow> {
         position: row.get("position")?,
         source_ref: row.get("source_ref")?,
         source_status: row.get("source_status")?,
-        source_path: row.get("source_path")?,
+        tree_source_id: row.get("tree_source_id")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
 }
 
 /// Canonical column list for SELECTs — uses the generalized columns.
-const CARD_COLUMNS: &str = r#"id, title, description, priority, "column", source, position, source_ref, source_status, source_path, created_at, updated_at"#;
+const CARD_COLUMNS: &str = r#"id, title, description, priority, "column", source, position, source_ref, source_status, tree_source_id, created_at, updated_at"#;
 
 /// SELECT all cards ordered by column then position.
 #[tauri::command]
@@ -79,7 +79,7 @@ pub async fn create_local_card(app: AppHandle, title: String, column: String) ->
         position,
         source_ref: None,
         source_status: None,
-        source_path: None,
+        tree_source_id: None,
         created_at: now.clone(),
         updated_at: now,
     })
@@ -96,7 +96,7 @@ pub async fn update_card(
     priority: Option<String>,
     column: Option<String>,
     source_status: Option<String>,
-    source_path: Option<String>,
+    tree_source_id: Option<String>,
 ) -> Result<(), String> {
     let conn = open_db(&app)?;
     let mut sets: Vec<String> = Vec::new();
@@ -123,10 +123,10 @@ pub async fn update_card(
         sets.push(format!("source_status = ?{}", binds.len() + 1));
         binds.push(Box::new(v));
     }
-    if let Some(v) = source_path {
-        // Empty string normalizes to NULL, matching the TS `patch.sourcePath || null` behavior.
+    if let Some(v) = tree_source_id {
+        // Empty string normalizes to NULL, matching the TS `patch.treeSourceId || null` behavior.
         let to_store: Option<String> = if v.is_empty() { None } else { Some(v) };
-        sets.push(format!("source_path = ?{}", binds.len() + 1));
+        sets.push(format!("tree_source_id = ?{}", binds.len() + 1));
         binds.push(Box::new(to_store));
     }
 
