@@ -1,4 +1,4 @@
-import { For, Show, createSignal, onMount } from 'solid-js';
+import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import type { SourceInstance } from '../types.ts';
 import { deleteAllSourceCards, listSources } from '../db.ts';
 import { reload } from './Board.tsx';
@@ -19,6 +19,9 @@ export default function ClearSourceModal(props: ClearSourceModalProps) {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') props.onClose(); };
+    window.addEventListener('keydown', onKey);
+    onCleanup(() => window.removeEventListener('keydown', onKey));
   });
 
   const selected = () => sources().find((s) => s.id === selectedId()) ?? null;
@@ -47,10 +50,12 @@ export default function ClearSourceModal(props: ClearSourceModalProps) {
       class="fixed inset-0 z-50 flex items-start justify-center pt-16 px-4 bg-black/50"
       role="dialog"
       aria-modal="true"
+      aria-label="Clear source cards"
       onClick={props.onClose}
     >
       <section
         class="w-full max-w-md max-h-[85vh] overflow-y-auto board-scroll bg-surface rounded-[var(--radius-card)] border border-border-subtle shadow-2xl"
+        aria-label="Clear source cards"
         onClick={(e) => e.stopPropagation()}
       >
         <div class="sticky top-0 flex items-center justify-between px-4 py-3 bg-surface border-b border-border-subtle">
@@ -88,6 +93,7 @@ export default function ClearSourceModal(props: ClearSourceModalProps) {
                     <input
                       type="radio"
                       name="clear-source"
+                      value={src.id}
                       checked={selectedId() === src.id}
                       onChange={() => setSelectedId(src.id)}
                     />
