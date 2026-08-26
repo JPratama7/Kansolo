@@ -343,7 +343,7 @@ mod tests {
             position: 0,
             source_ref: Some("PROJ-1".to_string()),
             source_status: Some("To Do".to_string()),
-            source_path: None,
+            tree_source_id: None,
             created_at: NOW.to_string(),
             updated_at: NOW.to_string(),
         };
