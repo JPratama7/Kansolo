@@ -1,4 +1,4 @@
-import { For, createSignal } from 'solid-js';
+import { For, createSignal, onCleanup, onMount } from 'solid-js';
 import type { ConflictResolution, SyncConflict } from '../types.ts';
 
 interface MergeModalProps {
@@ -21,6 +21,12 @@ const FIELD_LABELS: Record<string, string> = {
 export default function MergeModal(props: MergeModalProps) {
   // Per-field choice, keyed `${sourceRef}:${field}`.
   const [choices, setChoices] = createSignal<Choices>({});
+
+  onMount(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') props.onCancel(); };
+    window.addEventListener('keydown', onKey);
+    onCleanup(() => window.removeEventListener('keydown', onKey));
+  });
 
   function choiceFor(ref: string, field: string): Choice {
     return choices()[`${ref}:${field}`] ?? 'local';
@@ -57,15 +63,17 @@ export default function MergeModal(props: MergeModalProps) {
       class="fixed inset-0 z-50 flex items-start justify-center pt-12 px-4 bg-black/50"
       role="dialog"
       aria-modal="true"
+      aria-label="Merge conflicts"
       onClick={props.onCancel}
     >
       <section
         class="w-full max-w-3xl max-h-[85vh] overflow-y-auto board-scroll bg-surface rounded-[var(--radius-card)] border border-border-subtle shadow-2xl"
+        aria-label="Merge conflicts"
         onClick={(e) => e.stopPropagation()}
       >
         <div class="sticky top-0 flex items-center justify-between px-4 py-3 bg-surface border-b border-border-subtle">
           <h2 class="text-base font-bold text-ink">
-            Merge conflicts ({props.conflicts.length})
+            Merge conflicts <span class="tabular-nums">({props.conflicts.length})</span>
           </h2>
           <button
             type="button"
@@ -124,6 +132,7 @@ export default function MergeModal(props: MergeModalProps) {
                           <input
                             type="radio"
                             name={`${conflict.sourceRef}:${c.field}`}
+                            value="local"
                             checked={choiceFor(conflict.sourceRef, c.field) === 'local'}
                             onChange={() => pick(conflict.sourceRef, c.field, 'local')}
                           />
@@ -139,6 +148,7 @@ export default function MergeModal(props: MergeModalProps) {
                           <input
                             type="radio"
                             name={`${conflict.sourceRef}:${c.field}`}
+                            value="remote"
                             checked={choiceFor(conflict.sourceRef, c.field) === 'remote'}
                             onChange={() => pick(conflict.sourceRef, c.field, 'remote')}
                           />
