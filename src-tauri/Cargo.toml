@@ -34,6 +34,11 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 uuid = { version = "1", default-features = false, features = ["v4"] }
 
 [profile.dev]
+opt-level = 1
+codegen-units = 16
+incremental = true
+debug = true
+lto = false
 split-debuginfo = "unpacked"
 
 [profile.release]
