@@ -15,11 +15,10 @@ interface ColumnProps {
   column: { id: ColumnId; title: string };
   cards: () => KanbanCard[];
   treeSources: () => TreeSource[];
-  sourceLabels: () => Record<string, string>;
-  sourceEditors: () => Record<string, string | undefined>;
   onAdd: (title: string) => void;
-  onEdit: (id: string, title: string, description: string, priority: Priority) => void;
+  onEdit: (id: string, title: string, description: string, priority: Priority, treeSourceId: string) => void;
   onDelete: (id: string) => void;
+  onMove: (id: string, column: ColumnId) => void;
 }
 
 import { PRIORITIES } from '../types.ts';
@@ -65,6 +64,7 @@ export default function Column(props: ColumnProps) {
   return (
     <section
       use:droppable={droppable}
+      data-column-id={props.column.id}
       class="@container flex flex-col flex-1 min-w-0 max-h-full bg-surface rounded-[var(--radius-list)] border border-border-subtle"
       classList={{ 'ring-2 ring-accent': isOver() }}
     >
@@ -72,18 +72,12 @@ export default function Column(props: ColumnProps) {
 
       <header class="flex items-center justify-between px-3 pt-2 pb-1">
         <h2 class="text-sm font-bold text-ink">{props.column.title}</h2>
-        <span class="text-xs font-semibold text-ink-secondary bg-elevated rounded px-1.5 py-0.5">
+        <span class="text-xs font-semibold text-ink-secondary bg-elevated rounded px-1.5 py-0.5 tabular-nums">
           {sortedCards().length}
         </span>
       </header>
 
-      <div
-        class="card-grid px-2 py-1 board-scroll"
-        classList={{
-          'overflow-y-auto': dndState.active.draggable === null,
-          'overflow-visible': dndState.active.draggable !== null,
-        }}
-      >
+      <div class="card-grid px-2 py-1 board-scroll overflow-y-auto">
         <Show
           when={sortedCards().length > 0}
           fallback={
@@ -91,7 +85,7 @@ export default function Column(props: ColumnProps) {
           }
         >
           <For each={sortedCards()}>
-            {(card) => <Card card={card} treeSources={props.treeSources} sourceLabels={props.sourceLabels} sourceEditors={props.sourceEditors} onEdit={props.onEdit} onDelete={props.onDelete} />}
+            {(card) => <Card card={card} treeSources={props.treeSources} onEdit={props.onEdit} onDelete={props.onDelete} onMove={props.onMove} />}
           </For>
         </Show>
       </div>
@@ -110,7 +104,11 @@ export default function Column(props: ColumnProps) {
           }
         >
           <form onSubmit={submitAdd}>
+            <label for={`add-card-${props.column.id}`} class="sr-only">Card title</label>
             <textarea
+              id={`add-card-${props.column.id}`}
+              name="card_title"
+              autocomplete="off"
               class="w-full text-sm rounded-[var(--radius-card)] p-2 bg-elevated text-ink placeholder:text-ink-muted resize-none outline-none focus:ring-2 focus:ring-accent border border-border-subtle"
               value={newTitle()}
               onInput={(e) => setNewTitle(e.currentTarget.value)}
