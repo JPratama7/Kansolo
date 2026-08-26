@@ -20,7 +20,7 @@ export async function createLocalCard(title: string, column: ColumnId): Promise<
 export async function updateCard(
   id: string,
   patch: Partial<
-    Pick<KanbanCard, 'title' | 'description' | 'priority' | 'column' | 'sourceStatus' | 'sourcePath'>
+    Pick<KanbanCard, 'title' | 'description' | 'priority' | 'column' | 'sourceStatus' | 'treeSourceId'>
   >,
 ) {
   await invoke('update_card', { id, ...patch });
