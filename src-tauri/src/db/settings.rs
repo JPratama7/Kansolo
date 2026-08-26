@@ -1,6 +1,6 @@
 // Settings/snapshot/tree/source commands — filled in step n3
 use crate::db::{open_db, now_iso, ExternalSnapshot, SourceInstance, StatusMapping, TreeSource};
-use rusqlite::params;
+use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::collections::HashMap;
 use tauri::AppHandle;
@@ -210,10 +210,26 @@ pub async fn update_tree_source(
     Ok(())
 }
 
+/// Count cards still linked to a tree source. Returns an error message
+/// if any cards reference it, or `Ok(())` if deletion is safe.
+pub(crate) fn ensure_tree_source_deletable(conn: &Connection, id: &str) -> Result<(), String> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM cards WHERE tree_source_id = ?1",
+        params![id], |r| r.get(0),
+    ).map_err(|e| e.to_string())?;
+    if count > 0 {
+        return Err(format!(
+            "Cannot delete tree source: {count} card(s) still linked. Remove the link from those cards first."
+        ));
+    }
+    Ok(())
+}
+
 /// Delete a tree source by id.
 #[tauri::command]
 pub async fn delete_tree_source(app: AppHandle, id: String) -> Result<(), String> {
     let conn = open_db(&app)?;
+    ensure_tree_source_deletable(&conn, &id)?;
     conn.execute("DELETE FROM tree_sources WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
