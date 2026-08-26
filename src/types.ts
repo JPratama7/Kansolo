@@ -15,7 +15,7 @@ export interface KanbanCard {
   position: number;
   sourceRef?: string;
   sourceStatus?: string;
-  sourcePath?: string;
+  treeSourceId?: string;
   createdAt: string;
   updatedAt: string;
 }
