@@ -90,14 +90,19 @@ function App() {
 
   function lastSyncedLabel(): string {
     const value = lastSynced();
-    return value ? `Synced ${new Date(value).toLocaleString()}` : '';
+    if (!value) return '';
+    const d = new Date(value);
+    return `Synced ${d.toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}`;
   }
 
   return (
     <div class="h-full flex flex-col bg-base">
-      <header class="flex items-center justify-between px-3 py-2 bg-surface border-b border-border-subtle text-ink">
+      <a href="#main-board" class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:top-2 focus:left-2 focus:px-3 focus:py-1.5 focus:bg-accent focus:text-base focus:rounded">
+        Skip to board
+      </a>
+      <header class="flex items-center justify-between px-3 py-2 bg-surface border-b border-border-subtle text-ink safe-top">
         <div class="flex items-center gap-2 min-w-0">
-          <img src="/kansolo-icon.svg" alt="" class="w-6 h-6 shrink-0" />
+          <img src="/kansolo-icon.svg" alt="" width={24} height={24} class="w-6 h-6 shrink-0" />
           <h1 class="text-base font-bold tracking-tight truncate text-white">Kansolo</h1>
           {lastSynced() && (
             <span class="text-xs text-ink-muted truncate">{lastSyncedLabel()}</span>
@@ -115,6 +120,7 @@ function App() {
             </Show>
             {syncing() ? 'Syncing…' : 'Sync'}
           </button>
+          <span class="sr-only" aria-live="polite">{syncing() ? 'Syncing…' : ''}</span>
           <button
             type="button"
             class="px-3 py-1.5 text-sm font-medium rounded bg-elevated hover:bg-hover text-ink transition-colors disabled:opacity-50"
@@ -133,12 +139,12 @@ function App() {
         </div>
       </header>
       {syncError() && (
-        <div class="px-3 py-2 bg-p-urgent/15 border-b border-p-urgent/40 text-p-urgent text-sm" role="alert">
+        <div class="px-3 py-2 bg-p-urgent/15 border-b border-p-urgent/40 text-p-urgent text-sm" role="alert" aria-live="polite">
           {syncError()}
         </div>
       )}
       {unmatchedStatuses() && (
-        <div class="px-3 py-2 bg-p-high/15 border-b border-p-high/40 text-ink text-sm" role="status">
+        <div class="px-3 py-2 bg-p-high/15 border-b border-p-high/40 text-ink text-sm" role="status" aria-live="polite">
           <span class="font-semibold">Unmapped source statuses (sent to Backlog):</span>{' '}
           <span class="font-mono text-xs">{unmatchedStatuses()!.join(', ')}</span>
           <span class="block text-xs text-ink-secondary mt-0.5">
