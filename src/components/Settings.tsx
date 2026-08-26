@@ -1,5 +1,4 @@
-import { For, Show, createComponent, createMemo, createSignal, onMount } from 'solid-js';
-import { Dynamic } from 'solid-js/web';
+import { For, Show, createComponent, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import type { McpStatus, SourceInstance, SourceTypeMeta, StatusMapping, TreeSource } from '../types.ts';
 import { DEFAULT_STATUS_MAPPING } from '../columns.ts';
@@ -17,6 +16,7 @@ import {
   updateTreeSource,
 } from '../db.ts';
 import { SETTINGS_REGISTRY } from './settings/registry.ts';
+import { reload } from './Board.tsx';
 
 interface SettingsProps {
   onClose: () => void;
@@ -27,8 +27,19 @@ function isTrue(v: string | undefined): boolean {
   return v === 'true';
 }
 
+/** Section ids shown in the left rail; order is the navigation order. */
+const SECTIONS = [
+  { id: 'sources', label: 'Sources' },
+  { id: 'window', label: 'Window' },
+  { id: 'mcp', label: 'MCP server' },
+  { id: 'editor', label: 'Editor' },
+  { id: 'tree', label: 'Tree sources' },
+] as const;
+type SectionId = (typeof SECTIONS)[number]['id'];
 
 export default function Settings(props: SettingsProps) {
+  onCleanup(() => { void reload(); });
+
   // --- Source instances (data-driven via listSourceTypes/listSources) ---
   const [sourceTypes, setSourceTypes] = createSignal<SourceTypeMeta[]>([]);
   const [sources, setSources] = createSignal<SourceInstance[]>([]);
@@ -61,6 +72,18 @@ export default function Settings(props: SettingsProps) {
 
   const [error, setError] = createSignal<string | null>(null);
 
+  // --- Dialog shell: active section, smooth close, persisted size ---
+  const [activeSection, setActiveSection] = createSignal<SectionId>('sources');
+  const [closing, setClosing] = createSignal(false);
+  const [panelW, setPanelW] = createSignal(0);
+  const [panelH, setPanelH] = createSignal(0);
+  let panelEl: HTMLDivElement | undefined;
+  let resizeState: { x: number; y: number; w: number; h: number } | null = null;
+
+  const reduceMotion =
+    typeof window !== 'undefined' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
   // Paired instance + component — both guaranteed non-null when truthy.
   // Avoids signal timing issues where editing() and EditComponent() could
   // be read at different times inside <Dynamic> props.
@@ -83,6 +106,10 @@ export default function Settings(props: SettingsProps) {
     setMcpPort(parseInt(settings['mcp_port'] ?? '27816', 10) || 27816);
     setCloseToTray(settings['close_to_tray'] !== 'false');
     setEditorCommand(settings['editor_command'] ?? 'code');
+    const savedW = parseInt(settings['settings_w'] ?? '', 10);
+    const savedH = parseInt(settings['settings_h'] ?? '', 10);
+    if (savedW > 0) setPanelW(savedW);
+    if (savedH > 0) setPanelH(savedH);
     try {
       const status = await invoke<McpStatus>('mcp_status');
       setMcpRunning(status.running);
@@ -90,7 +117,59 @@ export default function Settings(props: SettingsProps) {
       setMcpRunning(false);
     }
     setTreeSources(await listTreeSources());
+
+    // Esc closes; smooth exit unless reduced motion.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') requestClose();
+    };
+    window.addEventListener('keydown', onKey);
+    onCleanup(() => window.removeEventListener('keydown', onKey));
   });
+
+  /** Smooth close: play the exit animation, then unmount via props.onClose. */
+  function requestClose() {
+    if (closing()) return;
+    if (reduceMotion) { props.onClose(); return; }
+    setClosing(true);
+    setTimeout(props.onClose, 150);
+  }
+
+  // --- Resize handle: drag to adjust size; persisted on pointerup. ---
+  function onResizeStart(e: PointerEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const el = panelEl;
+    resizeState = {
+      x: e.clientX,
+      y: e.clientY,
+      w: el?.offsetWidth ?? 640,
+      h: el?.offsetHeight ?? 560,
+    };
+    window.addEventListener('pointermove', onResizeMove);
+    window.addEventListener('pointerup', onResizeEnd);
+  }
+  function onResizeMove(e: PointerEvent) {
+    if (!resizeState) return;
+    const maxW = window.innerWidth * 0.9;
+    const maxH = window.innerHeight * 0.9;
+    const w = Math.min(Math.max(resizeState.w + (e.clientX - resizeState.x), 440), maxW);
+    const h = Math.min(Math.max(resizeState.h + (e.clientY - resizeState.y), 340), maxH);
+    setPanelW(w);
+    setPanelH(h);
+  }
+  async function onResizeEnd() {
+    window.removeEventListener('pointermove', onResizeMove);
+    window.removeEventListener('pointerup', onResizeEnd);
+    const w = panelW();
+    const h = panelH();
+    resizeState = null;
+    if (w > 0 && h > 0) {
+      try {
+        await setSetting('settings_w', String(Math.round(w)));
+        await setSetting('settings_h', String(Math.round(h)));
+      } catch { /* non-fatal: size just won't persist */ }
+    }
+  }
 
   /** Open the per-source editor: load the registry component for its type. */
   function startEdit(src: SourceInstance) {
@@ -176,7 +255,7 @@ export default function Settings(props: SettingsProps) {
         port: mcpPort(),
       });
       setMcpRunning(status.running);
-      props.onClose();
+      requestClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -216,379 +295,495 @@ export default function Settings(props: SettingsProps) {
     setTreeSources(await listTreeSources());
   }
 
+  const INPUT =
+    'w-full text-sm rounded px-2 py-1.5 bg-base text-ink placeholder:text-ink-secondary border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent';
 
   return (
     <div
-      class="fixed inset-0 z-50 flex items-start justify-center pt-10 px-4 bg-black/50"
+      class={'fixed inset-0 z-50 flex items-start justify-center pt-10 px-4 bg-black/50 ' +
+        (closing() ? 'settings-closing ' : '')}
       role="dialog"
       aria-modal="true"
-      onClick={props.onClose}
+      onClick={requestClose}
     >
       <section
-        class="w-full max-w-2xl max-h-[85vh] overflow-y-auto board-scroll bg-surface rounded-[var(--radius-card)] border border-border-subtle shadow-2xl"
+        ref={panelEl}
+        class="settings-panel relative flex flex-col w-[640px] h-[560px] max-w-[90vw] max-h-[90vh] bg-surface rounded-[var(--radius-card)] border border-border-subtle shadow-2xl overflow-hidden"
         aria-label="Settings"
         onClick={(e) => e.stopPropagation()}
+        style={{
+          width: panelW() ? `${panelW()}px` : undefined,
+          height: panelH() ? `${panelH()}px` : undefined,
+        }}
       >
-        <div class="sticky top-0 flex items-center justify-between px-4 py-3 bg-surface border-b border-border-subtle">
+        {/* Header */}
+        <div class="flex items-center justify-between px-4 py-3 bg-surface border-b border-border-subtle">
           <h2 class="text-base font-bold text-ink">Settings</h2>
           <button
             type="button"
             class="text-xl text-ink-secondary hover:text-ink leading-none px-1"
             aria-label="Close"
-            onClick={props.onClose}
+            onClick={requestClose}
           >
             ×
           </button>
         </div>
 
-        <div class="p-4 flex flex-col gap-4">
-          {/* --- Source instances --- */}
-          <fieldset class="border border-border-subtle rounded-[var(--radius-card)] p-3">
-            <legend class="text-xs font-semibold text-ink-secondary px-1">Sources</legend>
-            <div class="flex flex-col gap-2">
-              <Show when={sources().length > 0}>
-                <ul class="flex flex-col gap-1">
-                  <For each={sources()}>
-                    {(src) => (
-                      <li class="flex items-center justify-between gap-2 text-sm text-ink">
-                        <span class="min-w-0 truncate font-semibold">{src.label}</span>
-                        <span class="text-[10px] font-mono text-ink-secondary bg-base/60 rounded px-1 py-0.5">
-                          {src.sourceType}
-                        </span>
-                        <label class="flex items-center gap-1 text-xs text-ink-secondary">
-                          <input
-                            type="checkbox"
-                            class="accent-accent"
-                            checked={src.enabled}
-                            onChange={(e) => void handleToggleEnabled(src, e.currentTarget.checked)}
-                          />
-                          enabled
-                        </label>
-                        <div class="flex gap-2 shrink-0">
-                          <button
-                            type="button"
-                            class="text-xs text-ink-secondary hover:text-ink"
-                            onClick={() => startEdit(src)}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            class="text-xs text-ink-secondary hover:text-p-urgent"
-                            onClick={() => void handleDeleteSource(src.id)}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      </li>
-                    )}
-                  </For>
-                </ul>
-              </Show>
+        {error() && (
+          <div class="px-4 py-2 bg-p-urgent/15 border-b border-p-urgent/40 text-p-urgent text-sm" role="alert">
+            {error()}
+          </div>
+        )}
 
-              <Show when={addPickerOpen()}>
-                <div class="flex flex-col gap-2 rounded border border-border-subtle p-2 bg-base/40">
-                  <select
-                    class="w-full text-sm rounded px-2 py-1.5 bg-base text-ink border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-                    value={addType()}
-                    onChange={(e) => setAddType(e.currentTarget.value)}
-                  >
-                    <option value="">(select type)</option>
-                    <For each={sourceTypes()}>
-                      {(t) => <option value={t.source_type}>{t.label}</option>}
-                    </For>
-                  </select>
-                  <input
-                    type="text"
-                    class="w-full text-sm rounded px-2 py-1.5 bg-base text-ink placeholder:text-ink-muted border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-                    value={addLabel()}
-                    onInput={(e) => setAddLabel(e.currentTarget.value)}
-                    placeholder="Label (e.g. Work Jira)"
-                  />
-                  <div class="flex gap-2 justify-end">
-                    <button
-                      type="button"
-                      class="text-xs text-ink-secondary hover:text-ink"
-                      onClick={() => { setAddPickerOpen(false); setAddType(''); setAddLabel(''); }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      type="button"
-                      class="px-3 py-1 text-sm font-medium rounded bg-accent hover:bg-accent-hover text-base transition-colors disabled:opacity-50"
-                      disabled={!addType() || !addLabel().trim()}
-                      onClick={() => void handleAddSource()}
-                    >
-                      Add
-                    </button>
-                  </div>
-                </div>
-              </Show>
-
-              <Show when={!addPickerOpen()}>
+        {/* Two-pane body: rail + scrollable content */}
+        <div class="flex flex-1 min-h-0">
+          <nav class="w-36 shrink-0 border-r border-border-subtle bg-base/40 py-2 flex flex-col gap-0.5">
+            <For each={SECTIONS}>
+              {(s) => (
                 <button
                   type="button"
-                  class="self-start text-sm text-accent hover:text-accent-hover underline-offset-2 hover:underline"
-                  onClick={() => setAddPickerOpen(true)}
+                  class={'text-left text-sm px-3 py-2 transition-colors border-l-2 ' +
+                    (activeSection() === s.id
+                      ? 'border-accent text-ink bg-elevated/50 font-semibold'
+                      : 'border-transparent text-ink-secondary hover:text-ink hover:bg-elevated/30')}
+                  onClick={() => setActiveSection(s.id)}
                 >
-                  + Add source
+                  {s.label}
                 </button>
-              </Show>
-            </div>
-          </fieldset>
+              )}
+            </For>
+          </nav>
 
-          {/* --- Per-source editor (loaded from SETTINGS_REGISTRY) --- */}
-          <Show when={editing()}>
-            <fieldset class="border border-border-subtle rounded-[var(--radius-card)] p-3">
-              <legend class="text-xs font-semibold text-ink-secondary px-1">
-                Edit source — {editing()!.sourceType}
-              </legend>
-              <div class="flex flex-col gap-3">
-                <div>
-                  <label class="block text-xs font-semibold text-ink-secondary mb-1" for="settings-edit-label">
-                    Label
-                  </label>
-                  <input
-                    id="settings-edit-label"
-                    type="text"
-                    class="w-full text-sm rounded px-2 py-1.5 bg-base text-ink border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-                    value={editLabel()}
-                    onInput={(e) => setEditLabel(e.currentTarget.value)}
-                  />
-                </div>
-                <label class="flex items-center gap-2 text-sm text-ink">
-                  <input
-                    type="checkbox"
-                    class="accent-accent"
-                    checked={editEnabled()}
-                    onChange={(e) => setEditEnabled(e.currentTarget.checked)}
-                  />
-                  Enabled
-                </label>
-                <Show
-                  when={editView()}
-                  fallback={<p class="text-xs text-ink-secondary">Loading settings…</p>}
-                >
-                  {(view) => {
-                    const v = view();
-                    return createComponent(v.comp, {
-                    instance: v.inst,
-                      onSave: (cfg: Record<string, unknown>, m: StatusMapping) => void handleSaveEdit(cfg, m),
-                    });
-                  }}
-                </Show>
-                <div class="flex gap-2 justify-end">
-                  <button
-                    type="button"
-                    class="text-xs text-ink-secondary hover:text-ink"
-                    onClick={() => { setEditing(null); setEditComponent(null); }}
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-            </fieldset>
-          </Show>
+          <div class="flex-1 min-w-0 overflow-y-auto board-scroll p-4">
+            <Show when={activeSection()} keyed>
+              {(id) => (
+                <div class="settings-pane flex flex-col gap-4">
+                  {id === 'sources' && (
+                    <>
+                      <fieldset class="border border-border-subtle rounded-[var(--radius-card)] p-3">
+                        <legend class="text-xs font-semibold text-ink-secondary px-1">Sources</legend>
+                        <div class="flex flex-col gap-2">
+                          <Show when={sources().length > 0}>
+                            <ul class="flex flex-col gap-1">
+                              <For each={sources()}>
+                                {(src) => (
+                                  <li class="flex items-center justify-between gap-2 text-sm text-ink">
+                                    <span class="min-w-0 truncate font-semibold">{src.label}</span>
+                                    <span class="text-[10px] font-mono text-ink-secondary bg-base/60 rounded px-1 py-0.5">
+                                      {src.sourceType}
+                                    </span>
+                                    <label class="flex items-center gap-1 text-xs text-ink-secondary">
+                                      <input
+                                        type="checkbox"
+                                        class="accent-accent"
+                                        checked={src.enabled}
+                                        onChange={(e) => void handleToggleEnabled(src, e.currentTarget.checked)}
+                                      />
+                                      enabled
+                                    </label>
+                                    <div class="flex gap-2 shrink-0">
+                                      <button
+                                        type="button"
+                                        class="text-xs text-ink-secondary hover:text-ink"
+                                        onClick={() => startEdit(src)}
+                                      >
+                                        Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        class="text-xs text-ink-secondary hover:text-p-urgent"
+                                        onClick={() => void handleDeleteSource(src.id)}
+                                      >
+                                        Delete
+                                      </button>
+                                    </div>
+                                  </li>
+                                )}
+                              </For>
+                            </ul>
+                          </Show>
 
-          <fieldset class="border border-border-subtle rounded-[var(--radius-card)] p-3">
-            <legend class="text-xs font-semibold text-ink-secondary px-1">Window</legend>
-            <label class="flex items-center gap-2 text-sm text-ink">
-              <input
-                id="settings-close-to-tray"
-                type="checkbox"
-                class="accent-accent"
-                checked={closeToTray()}
-                onChange={(e) => setCloseToTray(e.currentTarget.checked)}
-              />
-              Close button hides to tray instead of quitting
-            </label>
-          </fieldset>
+                          <Show when={addPickerOpen()}>
+                            <div class="flex flex-col gap-2 rounded border border-border-subtle p-2 bg-base/40">
+                              <select
+                                class={INPUT}
+                                aria-label="Source type"
+                                name="source_type"
+                                value={addType()}
+                                onChange={(e) => setAddType(e.currentTarget.value)}
+                              >
+                                <option value="">(select type)</option>
+                                <For each={sourceTypes()}>
+                                  {(t) => <option value={t.source_type}>{t.label}</option>}
+                                </For>
+                              </select>
+                              <input
+                                type="text"
+                                class={INPUT}
+                                name="source_label"
+                                autocomplete="off"
+                                value={addLabel()}
+                                onInput={(e) => setAddLabel(e.currentTarget.value)}
+                                placeholder="Label (e.g. Work Jira)…"
+                              />
+                              <div class="flex gap-2 justify-end">
+                                <button
+                                  type="button"
+                                  class="text-xs text-ink-secondary hover:text-ink"
+                                  onClick={() => { setAddPickerOpen(false); setAddType(''); setAddLabel(''); }}
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  class="px-3 py-1 text-sm font-medium rounded bg-accent hover:bg-accent-hover text-base transition-colors disabled:opacity-50"
+                                  disabled={!addType() || !addLabel().trim()}
+                                  onClick={() => void handleAddSource()}
+                                >
+                                  Add
+                                </button>
+                              </div>
+                            </div>
+                          </Show>
 
-          <fieldset class="border border-border-subtle rounded-[var(--radius-card)] p-3">
-            <legend class="text-xs font-semibold text-ink-secondary px-1">MCP server</legend>
-            <div class="flex flex-col gap-3">
-              <label class="flex items-center gap-2 text-sm text-ink">
-                <input
-                  id="settings-mcp-enabled"
-                  type="checkbox"
-                  class="accent-accent"
-                  checked={mcpEnabled()}
-                  onChange={(e) => setMcpEnabled(e.currentTarget.checked)}
-                />
-                Enable MCP server (streamable HTTP)
-              </label>
-              <div>
-                <label class="block text-xs font-semibold text-ink-secondary mb-1" for="settings-mcp-port">
-                  Port
-                </label>
-                <input
-                  id="settings-mcp-port"
-                  type="number"
-                  min={1}
-                  max={65535}
-                  class="w-full text-sm rounded px-2 py-1.5 bg-base text-ink border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-                  value={mcpPort()}
-                  onInput={(e) => setMcpPort(parseInt(e.currentTarget.value, 10) || 27816)}
-                />
-              </div>
-              <p class="text-xs text-ink-secondary">
-                Endpoint: <code class="font-mono">http://127.0.0.1:{mcpPort()}/mcp</code>
-                {mcpRunning() ? ' — running' : ' — stopped'}
-              </p>
-            </div>
-          </fieldset>
+                          <Show when={!addPickerOpen()}>
+                            <button
+                              type="button"
+                              class="self-start text-sm text-accent hover:text-accent-hover underline-offset-2 hover:underline"
+                              onClick={() => setAddPickerOpen(true)}
+                            >
+                              + Add source
+                            </button>
+                          </Show>
+                        </div>
+                      </fieldset>
 
-          <fieldset class="border border-border-subtle rounded-[var(--radius-card)] p-3">
-            <legend class="text-xs font-semibold text-ink-secondary px-1">Editor</legend>
-            <label class="block text-xs font-semibold text-ink-secondary mb-1" for="settings-editor-command">
-              Editor command
-            </label>
-            <input
-              id="settings-editor-command"
-              type="text"
-              class="w-full text-sm rounded px-2 py-1.5 bg-base text-ink placeholder:text-ink-muted border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-              value={editorCommand()}
-              onInput={(e) => setEditorCommand(e.currentTarget.value)}
-              placeholder="code"
-            />
-            <p class="text-xs text-ink-secondary mt-1">
-              Default for the card right-click "Open in editor" action. Each tree source can override this. Use <code class="font-mono">{'{path}'}</code> as a placeholder for the card's source path; if omitted the path is appended.
-            </p>
-          </fieldset>
-
-          <fieldset class="border border-border-subtle rounded-[var(--radius-card)] p-3">
-            <legend class="text-xs font-semibold text-ink-secondary px-1">Tree sources</legend>
-            <div class="flex flex-col gap-3">
-              <Show when={treeSources().length > 0}>
-                <ul class="flex flex-col gap-1">
-                  <For each={treeSources()}>
-                    {(src) => (
-                      <li class="flex items-center justify-between gap-2 text-sm text-ink">
-                        <Show
-                          when={editingTree()?.id === src.id}
-                          fallback={
-                            <span class="min-w-0 truncate font-semibold">{src.label}</span>
-                          }
-                        >
-                          <div class="flex flex-1 gap-2">
-                            <input
-                              type="text"
-                              class="flex-1 text-sm rounded px-2 py-1 bg-base text-ink placeholder:text-ink-muted border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-                              value={editTreeLabel()}
-                              onInput={(e) => setEditTreeLabel(e.currentTarget.value)}
-                              placeholder="Label"
-                            />
-                            <input
-                              type="text"
-                              class="flex-1 text-sm rounded px-2 py-1 bg-base text-ink placeholder:text-ink-muted border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-                              value={editTreePath()}
-                              onInput={(e) => setEditTreePath(e.currentTarget.value)}
-                              placeholder="path/to/source/folder"
-                            />
-                            <input
-                              type="text"
-                              class="flex-1 text-sm rounded px-2 py-1 bg-base text-ink placeholder:text-ink-muted border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-                              value={editTreeEditor()}
-                              onInput={(e) => setEditTreeEditor(e.currentTarget.value)}
-                              placeholder="editor cmd (optional)"
-                            />
-                          </div>
-                        </Show>
-                        <div class="flex gap-2 shrink-0">
-                          <Show
-                            when={editingTree()?.id === src.id}
-                            fallback={
+                      <Show when={editing()}>
+                        <fieldset class="border border-border-subtle rounded-[var(--radius-card)] p-3">
+                          <legend class="text-xs font-semibold text-ink-secondary px-1">
+                            Edit source — {editing()!.sourceType}
+                          </legend>
+                          <div class="flex flex-col gap-3">
+                            <div>
+                              <label class="block text-xs font-semibold text-ink-secondary mb-1" for="settings-edit-label">
+                                Label
+                              </label>
+                              <input
+                                id="settings-edit-label"
+                                type="text"
+                                name="edit_label"
+                                autocomplete="off"
+                                class={INPUT}
+                                value={editLabel()}
+                                onInput={(e) => setEditLabel(e.currentTarget.value)}
+                              />
+                            </div>
+                            <label class="flex items-center gap-2 text-sm text-ink">
+                              <input
+                                type="checkbox"
+                                class="accent-accent"
+                                checked={editEnabled()}
+                                onChange={(e) => setEditEnabled(e.currentTarget.checked)}
+                              />
+                              Enabled
+                            </label>
+                            <Show
+                              when={editView()}
+                              fallback={<p class="text-xs text-ink-secondary">Loading settings…</p>}
+                            >
+                              {(view) => {
+                                const v = view();
+                                return createComponent(v.comp, {
+                                  instance: v.inst,
+                                  onSave: (cfg: Record<string, unknown>, m: StatusMapping) => handleSaveEdit(cfg, m),
+                                });
+                              }}
+                            </Show>
+                            <div class="flex gap-2 justify-end">
                               <button
                                 type="button"
                                 class="text-xs text-ink-secondary hover:text-ink"
-                                onClick={() => startEditTree(src)}
+                                onClick={() => { setEditing(null); setEditComponent(null); }}
                               >
-                                Edit
+                                Close
                               </button>
-                            }
-                          >
-                            <button
-                              type="button"
-                              class="text-xs text-accent hover:text-accent-hover"
-                              onClick={() => void handleSaveEditTree()}
-                            >
-                              Save
-                            </button>
-                            <button
-                              type="button"
-                              class="text-xs text-ink-secondary hover:text-ink"
-                              onClick={() => setEditingTree(null)}
-                            >
-                              Cancel
-                            </button>
-                          </Show>
+                            </div>
+                          </div>
+                        </fieldset>
+                      </Show>
+                    </>
+                  )}
+
+                  {id === 'window' && (
+                    <fieldset class="border border-border-subtle rounded-[var(--radius-card)] p-3">
+                      <legend class="text-xs font-semibold text-ink-secondary px-1">Window</legend>
+                      <label class="flex items-center gap-2 text-sm text-ink">
+                        <input
+                          id="settings-close-to-tray"
+                          type="checkbox"
+                          name="close_to_tray"
+                          autocomplete="off"
+                          class="accent-accent"
+                          checked={closeToTray()}
+                          onChange={(e) => setCloseToTray(e.currentTarget.checked)}
+                        />
+                        Close button hides to tray instead of quitting
+                      </label>
+                    </fieldset>
+                  )}
+
+                  {id === 'mcp' && (
+                    <fieldset class="border border-border-subtle rounded-[var(--radius-card)] p-3">
+                      <legend class="text-xs font-semibold text-ink-secondary px-1">MCP server</legend>
+                      <div class="flex flex-col gap-3">
+                        <label class="flex items-center gap-2 text-sm text-ink">
+                          <input
+                            id="settings-mcp-enabled"
+                            type="checkbox"
+                            name="mcp_enabled"
+                            autocomplete="off"
+                            class="accent-accent"
+                            checked={mcpEnabled()}
+                            onChange={(e) => setMcpEnabled(e.currentTarget.checked)}
+                          />
+                          Enable MCP server (streamable HTTP)
+                        </label>
+                        <div>
+                          <label class="block text-xs font-semibold text-ink-secondary mb-1" for="settings-mcp-port">
+                            Port
+                          </label>
+                          <input
+                            id="settings-mcp-port"
+                            type="number"
+                            name="mcp_port"
+                            autocomplete="off"
+                            inputmode="numeric"
+                            min={1}
+                            max={65535}
+                            class={INPUT}
+                            value={mcpPort()}
+                            onInput={(e) => setMcpPort(parseInt(e.currentTarget.value, 10) || 27816)}
+                          />
+                        </div>
+                        <p class="text-xs text-ink-secondary">
+                          Endpoint: <code class="font-mono">http://127.0.0.1:{mcpPort()}/mcp</code>
+                          {mcpRunning() ? ' — running' : ' — stopped'}
+                        </p>
+                      </div>
+                    </fieldset>
+                  )}
+
+                  {id === 'editor' && (
+                    <fieldset class="border border-border-subtle rounded-[var(--radius-card)] p-3">
+                      <legend class="text-xs font-semibold text-ink-secondary px-1">Editor</legend>
+                      <label class="block text-xs font-semibold text-ink-secondary mb-1" for="settings-editor-command">
+                        Editor command
+                      </label>
+                      <input
+                        id="settings-editor-command"
+                        type="text"
+                        name="editor_command"
+                        autocomplete="off"
+                        class={INPUT}
+                        value={editorCommand()}
+                        onInput={(e) => setEditorCommand(e.currentTarget.value)}
+                        placeholder="code…"
+                      />
+                      <p class="text-xs text-ink-secondary mt-1">
+                        Default for the card right-click "Open in editor" action. Each tree source can override this. Use <code class="font-mono">{'{path}'}</code> as a placeholder for the card's source path; if omitted the path is appended.
+                      </p>
+                    </fieldset>
+                  )}
+
+                  {id === 'tree' && (
+                    <fieldset class="border border-border-subtle rounded-[var(--radius-card)] p-3">
+                      <legend class="text-xs font-semibold text-ink-secondary px-1">Tree sources</legend>
+                      <div class="flex flex-col gap-3">
+                        <Show when={treeSources().length > 0}>
+                          <ul class="flex flex-col gap-1">
+                            <For each={treeSources()}>
+                              {(src) => (
+                                <li class="flex flex-col gap-2 text-sm text-ink">
+                                  <Show
+                                    when={editingTree()?.id === src.id}
+                                    fallback={
+                                      <div class="flex items-center justify-between gap-2">
+                                        <span class="min-w-0 truncate font-semibold">{src.label}</span>
+                                        <div class="flex gap-2 shrink-0">
+                                          <button
+                                            type="button"
+                                            class="text-xs text-ink-secondary hover:text-ink"
+                                            onClick={() => startEditTree(src)}
+                                          >
+                                            Edit
+                                          </button>
+                                          <button
+                                            type="button"
+                                            class="text-xs text-ink-secondary hover:text-p-urgent"
+                                            onClick={() => void handleDeleteTree(src.id)}
+                                          >
+                                            Remove
+                                          </button>
+                                        </div>
+                                      </div>
+                                    }
+                                  >
+                                    <div class="flex flex-col gap-2">
+                                      <label class="sr-only" for={`tree-edit-label-${src.id}`}>Label</label>
+                                      <input
+                                        id={`tree-edit-label-${src.id}`}
+                                        type="text"
+                                        name="tree_label"
+                                        autocomplete="off"
+                                        class="w-full text-sm rounded px-2 py-1 bg-base text-ink placeholder:text-ink-muted border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
+                                        value={editTreeLabel()}
+                                        onInput={(e) => setEditTreeLabel(e.currentTarget.value)}
+                                        placeholder="Label…"
+                                      />
+                                      <label class="sr-only" for={`tree-edit-path-${src.id}`}>Path</label>
+                                      <input
+                                        id={`tree-edit-path-${src.id}`}
+                                        type="text"
+                                        name="tree_path"
+                                        autocomplete="off"
+                                        class="w-full text-sm rounded px-2 py-1 bg-base text-ink placeholder:text-ink-muted border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
+                                        value={editTreePath()}
+                                        onInput={(e) => setEditTreePath(e.currentTarget.value)}
+                                        placeholder="path/to/source/folder…"
+                                      />
+                                      <label class="sr-only" for={`tree-edit-editor-${src.id}`}>Editor command</label>
+                                      <input
+                                        id={`tree-edit-editor-${src.id}`}
+                                        type="text"
+                                        name="tree_editor"
+                                        autocomplete="off"
+                                        class="w-full text-sm rounded px-2 py-1 bg-base text-ink placeholder:text-ink-muted border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
+                                        value={editTreeEditor()}
+                                        onInput={(e) => setEditTreeEditor(e.currentTarget.value)}
+                                        placeholder="editor cmd (optional)…"
+                                      />
+                                    </div>
+                                  </Show>
+                                  <Show when={editingTree()?.id === src.id}>
+                                    <div class="flex gap-2 justify-end">
+                                      <button
+                                        type="button"
+                                        class="text-xs text-accent hover:text-accent-hover"
+                                        onClick={() => void handleSaveEditTree()}
+                                      >
+                                        Save
+                                      </button>
+                                      <button
+                                        type="button"
+                                        class="text-xs text-ink-secondary hover:text-ink"
+                                        onClick={() => setEditingTree(null)}
+                                      >
+                                        Cancel
+                                      </button>
+                                      <button
+                                        type="button"
+                                        class="text-xs text-ink-secondary hover:text-p-urgent"
+                                        onClick={() => void handleDeleteTree(src.id)}
+                                      >
+                                        Remove
+                                      </button>
+                                    </div>
+                                  </Show>
+                                </li>
+                              )}
+                            </For>
+                          </ul>
+                        </Show>
+                        <div class="flex flex-wrap gap-2">
+                          <label class="sr-only" for="new-tree-label">Label</label>
+                          <input
+                            id="new-tree-label"
+                            type="text"
+                            name="new_tree_label"
+                            autocomplete="off"
+                            class="flex-1 min-w-[120px] text-sm rounded px-2 py-1.5 bg-base text-ink placeholder:text-ink-secondary border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
+                            value={newTreeLabel()}
+                            onInput={(e) => setNewTreeLabel(e.currentTarget.value)}
+                            placeholder="Label…"
+                          />
+                          <label class="sr-only" for="new-tree-path">Path</label>
+                          <input
+                            id="new-tree-path"
+                            type="text"
+                            name="new_tree_path"
+                            autocomplete="off"
+                            class="flex-1 min-w-[120px] text-sm rounded px-2 py-1.5 bg-base text-ink placeholder:text-ink-secondary border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
+                            value={newTreePath()}
+                            onInput={(e) => setNewTreePath(e.currentTarget.value)}
+                            placeholder="path/to/source/folder…"
+                          />
+                          <label class="sr-only" for="new-tree-editor">Editor command</label>
+                          <input
+                            id="new-tree-editor"
+                            type="text"
+                            name="new_tree_editor"
+                            autocomplete="off"
+                            class="flex-1 min-w-[120px] text-sm rounded px-2 py-1.5 bg-base text-ink placeholder:text-ink-secondary border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
+                            value={newTreeEditor()}
+                            onInput={(e) => setNewTreeEditor(e.currentTarget.value)}
+                            placeholder="editor cmd (optional)…"
+                          />
                           <button
                             type="button"
-                            class="text-xs text-ink-secondary hover:text-p-urgent"
-                            onClick={() => void handleDeleteTree(src.id)}
+                            class="px-3 py-1.5 text-sm font-medium rounded border border-border-subtle text-ink-secondary hover:bg-elevated transition-colors"
+                            onClick={() => void handleAddTree()}
                           >
-                            Remove
+                            Add
                           </button>
                         </div>
-                      </li>
-                    )}
-                  </For>
-                </ul>
-              </Show>
-              <div class="flex gap-2">
-                <input
-                  type="text"
-                  class="flex-1 text-sm rounded px-2 py-1.5 bg-base text-ink placeholder:text-ink-muted border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-                  value={newTreeLabel()}
-                  onInput={(e) => setNewTreeLabel(e.currentTarget.value)}
-                  placeholder="Label"
-                />
-                <input
-                  type="text"
-                  class="flex-1 text-sm rounded px-2 py-1.5 bg-base text-ink placeholder:text-ink-muted border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-                  value={newTreePath()}
-                  onInput={(e) => setNewTreePath(e.currentTarget.value)}
-                  placeholder="path/to/source/folder"
-                />
-                <input
-                  type="text"
-                  class="flex-1 text-sm rounded px-2 py-1.5 bg-base text-ink placeholder:text-ink-muted border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
-                  value={newTreeEditor()}
-                  onInput={(e) => setNewTreeEditor(e.currentTarget.value)}
-                  placeholder="editor cmd (optional)"
-                />
-                <button
-                  type="button"
-                  class="px-3 py-1.5 text-sm font-medium rounded border border-border-subtle text-ink-secondary hover:bg-elevated transition-colors"
-                  onClick={() => void handleAddTree()}
-                >
-                  Add
-                </button>
-              </div>
-            </div>
-          </fieldset>
-
-          {error() && (
-            <p class="text-sm text-p-urgent" role="alert">{error()}</p>
-          )}
-
-          <div class="flex gap-2 justify-end">
-            <button
-              type="button"
-              class="px-3 py-1.5 text-sm font-medium rounded text-ink-secondary hover:bg-elevated transition-colors"
-              onClick={props.onClose}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              class="px-3 py-1.5 text-sm font-medium rounded bg-accent hover:bg-accent-hover text-base transition-colors"
-              onClick={() => void handleSaveAppSettings()}
-            >
-              Save
-            </button>
+                      </div>
+                    </fieldset>
+                  )}
+                </div>
+              )}
+            </Show>
           </div>
         </div>
+
+        {/* Footer */}
+        <div class="flex gap-2 justify-end px-4 py-3 bg-surface border-t border-border-subtle">
+          <button
+            type="button"
+            class="px-3 py-1.5 text-sm font-medium rounded text-ink-secondary hover:bg-elevated transition-colors"
+            onClick={requestClose}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="px-3 py-1.5 text-sm font-medium rounded bg-accent hover:bg-accent-hover text-base transition-colors"
+            onClick={() => void handleSaveAppSettings()}
+          >
+            Save
+          </button>
+        </div>
+
+        {/* Resize grip */}
+        <div
+          class="settings-grip"
+          onPointerDown={onResizeStart}
+          onKeyDown={(e) => {
+            const step = e.shiftKey ? 20 : 5;
+            if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+              e.preventDefault();
+              setPanelW((w) => Math.min(w + step, window.innerWidth * 0.9));
+              setPanelH((h) => Math.min(h + step, window.innerHeight * 0.9));
+            } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              setPanelW((w) => Math.max(w - step, 440));
+              setPanelH((h) => Math.max(h - step, 340));
+            }
+          }}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize settings"
+          tabindex={0}
+        />
       </section>
     </div>
   );
