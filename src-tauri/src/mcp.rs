@@ -109,7 +109,7 @@ impl KansoloMcp {
             .prepare(
                 r#"SELECT id, title, description, priority, "column", source, position,
                           source_ref, source_status,
-                          source_path, created_at, updated_at
+                          tree_source_id, created_at, updated_at
                    FROM cards
                    ORDER BY "column", position ASC"#,
             )
@@ -126,7 +126,7 @@ impl KansoloMcp {
                     position: r.get(6)?,
                     source_ref: r.get(7)?,
                     source_status: r.get(8)?,
-                    source_path: r.get(9)?,
+                    tree_source_id: r.get(9)?,
                     created_at: r.get(10)?,
                     updated_at: r.get(11)?,
                 })
@@ -152,7 +152,7 @@ impl KansoloMcp {
             .query_row(
                 r#"SELECT id, title, description, priority, "column", source, position,
                           source_ref, source_status,
-                          source_path, created_at, updated_at
+                          tree_source_id, created_at, updated_at
                    FROM cards WHERE id = ?1"#,
                 [&id],
                 |r| {
@@ -166,7 +166,7 @@ impl KansoloMcp {
                         position: r.get(6)?,
                         source_ref: r.get(7)?,
                         source_status: r.get(8)?,
-                        source_path: r.get(9)?,
+                        tree_source_id: r.get(9)?,
                         created_at: r.get(10)?,
                         updated_at: r.get(11)?,
                     })
