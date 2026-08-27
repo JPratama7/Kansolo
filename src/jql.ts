@@ -1,9 +1,7 @@
 /// <reference lib="deno.ns" />
 
-/** Assignee filter mode. */
 export type AssigneeMode = 'current' | 'specific' | 'any';
 
-/** Status filter mode. */
 export type StatusMode = 'unresolved' | 'all' | 'specific';
 
 /** Updated-within window. `any` = no updated clause. */
