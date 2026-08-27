@@ -177,7 +177,7 @@ export default function Board() {
   });
 
   async function addCard(title: string, column: ColumnId) {
-    const card = await createLocalCard(title, column); // db first
+    const card = await createLocalCard(title, column);
     setCards((prev) => [...prev, card]);
   }
 
@@ -192,7 +192,6 @@ export default function Board() {
     );
   }
 
-  /** EditModal save: persist via editCard using the currently-edited card's id, then close. */
   function handleEditSave(result: EditModalResult) {
     const card = currentlyEditingCard();
     if (card) void editCard(card.id, result.title, result.description, result.priority, result.treeSourceId);
@@ -200,12 +199,12 @@ export default function Board() {
   }
 
   async function deleteCard(id: string) {
-    await deleteCardDb(id); // db first
+    await deleteCardDb(id);
     setCards((prev) => prev.filter((c) => c.id !== id));
   }
 
   async function moveCardTo(id: string, column: ColumnId, position: number) {
-    await moveCardDb(id, column, position); // db first
+    await moveCardDb(id, column, position);
     setCards((prev) =>
       prev.map((c) =>
         c.id === id ? { ...c, column, position, updatedAt: new Date().toISOString() } : c,
@@ -240,7 +239,6 @@ export default function Board() {
     }
   }
 
-  /** "Move to {col}" menu item: persist the move and close the menu. */
   function moveMenuCardTo(column: ColumnId) {
     const card = currentlyMenuingCard();
     if (!card || card.column === column) return;
@@ -248,7 +246,6 @@ export default function Board() {
     setCurrentlyMenuingCard(null);
   }
 
-  /** "Edit" menu item: hand off to the singleton EditModal and close menu. */
   function editFromMenu() {
     const card = currentlyMenuingCard();
     if (!card) return;

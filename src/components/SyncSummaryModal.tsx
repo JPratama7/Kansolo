@@ -1,6 +1,5 @@
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
 
-/** One source's import count for the summary. */
 export interface SyncSummaryEntry {
   label: string;
   sourceType: string;
@@ -60,7 +59,6 @@ export default function SyncSummaryModal(props: SyncSummaryModalProps) {
     onCleanup(() => cancelAnimationFrame(id));
   });
 
-  // Escape closes.
   onMount(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') props.onClose(); };
     window.addEventListener('keydown', onKey);
@@ -90,7 +88,6 @@ export default function SyncSummaryModal(props: SyncSummaryModalProps) {
         aria-label="Sync summary"
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Eyebrow + receipt timestamp */}
         <div class="flex items-center justify-between px-5 pt-4 pb-2">
           <span class="text-[11px] font-semibold uppercase tracking-[0.18em] text-ink-secondary">
             Sync complete
@@ -101,7 +98,6 @@ export default function SyncSummaryModal(props: SyncSummaryModalProps) {
         </div>
 
         <div class="px-5 pb-5 flex flex-col gap-4">
-          {/* Hero count */}
           <div class="flex items-baseline gap-2">
             <span
               class="text-6xl font-extrabold tabular-nums leading-none"
@@ -114,7 +110,6 @@ export default function SyncSummaryModal(props: SyncSummaryModalProps) {
             </span>
           </div>
 
-          {/* Signature: stacked proportion bar (only when imports exist) */}
           <Show when={hasImports()}>
             <div class="sync-bar" classList={{ 'is-mounted': mounted() }}>
               <For each={props.entries}>
@@ -131,7 +126,6 @@ export default function SyncSummaryModal(props: SyncSummaryModalProps) {
             </div>
           </Show>
 
-          {/* Per-source rows */}
           <Show
             when={props.entries.length > 0}
             fallback={<p class="text-sm text-ink-secondary">No enabled sources.</p>}
@@ -159,7 +153,6 @@ export default function SyncSummaryModal(props: SyncSummaryModalProps) {
             </ul>
           </Show>
 
-          {/* Empty state: direction, not mood */}
           <Show when={!hasImports()}>
             <div class="rounded-md border border-border-subtle bg-elevated/30 px-3 py-2.5">
               <p class="text-sm text-ink-secondary leading-snug">
@@ -171,7 +164,6 @@ export default function SyncSummaryModal(props: SyncSummaryModalProps) {
             </div>
           </Show>
 
-          {/* Footer */}
           <div class="flex gap-2 justify-end pt-1">
             <button
               type="button"
