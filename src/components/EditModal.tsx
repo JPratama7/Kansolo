@@ -1,7 +1,12 @@
-import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
+import { Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
+import { Portal } from 'solid-js/web';
 import { micromark } from 'micromark';
+import { Dialog } from '@ark-ui/solid/dialog';
+import { Tabs } from '@ark-ui/solid/tabs';
 import type { KanbanCard, Priority, TreeSource } from '../types.ts';
 import { PRIORITIES } from '../types.ts';
+import { ArkSelect } from './ui/ArkSelect.tsx';
+import { toaster } from './ui/toaster.ts';
 
 export interface EditModalResult {
   title: string;
@@ -11,11 +16,21 @@ export interface EditModalResult {
 }
 
 interface EditModalProps {
+  card: KanbanCard | null;
+  treeSources: () => TreeSource[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSave: (result: EditModalResult) => void;
+  onDirtyChange?: (dirty: boolean) => void;
+}
+
+interface EditModalFormProps {
   card: KanbanCard;
   treeSources: () => TreeSource[];
-  sourceRef?: string;
-  onCancel: () => void;
+  onClose: () => void;
   onSave: (result: EditModalResult) => void;
+  onDirtyChange: (dirty: boolean) => void;
+  onPreviewChange: (preview: boolean) => void;
 }
 
 const FIELD =
@@ -35,7 +50,13 @@ const PRIORITY_PILL: Record<Priority, string> = {
   urgent: 'priority-pill--urgent',
 };
 
-export default function EditModal(props: EditModalProps) {
+/**
+ * Inner form, mounted fresh per edited card via `<Show keyed>`. Owns the
+ * editable field signals so they reset cleanly when the Board-level singleton
+ * switches cards. Reports dirty/preview state upward so the Dialog.Root (which
+ * lives in the parent) can guard Escape.
+ */
+function EditModalForm(props: EditModalFormProps) {
   const [title, setTitle] = createSignal(props.card.title);
   const [description, setDescription] = createSignal(props.card.description);
   const [priority, setPriority] = createSignal<Priority>(props.card.priority);
@@ -47,19 +68,6 @@ export default function EditModal(props: EditModalProps) {
   const treeSourceLabel = () =>
     props.treeSources().find((s) => s.id === props.card.treeSourceId)?.label ?? props.card.treeSourceId ?? '';
 
-  // Rect of the column the edited card belongs to. When present, the modal
-  // overlays that column (left/top/width match). Null falls back to a centered
-  // layout so the modal still works if the column DOM can't be found.
-  const [columnRect, setColumnRect] = createSignal<{ left: number; top: number; width: number; height: number } | null>(null);
-  const [viewportH, setViewportH] = createSignal(typeof window !== 'undefined' ? window.innerHeight : 0);
-
-  function readColumnRect() {
-    const el = document.querySelector(`[data-column-id="${props.card.column}"]`);
-    if (!el) { setColumnRect(null); return; }
-    const r = (el as HTMLElement).getBoundingClientRect();
-    setColumnRect({ left: r.left, top: r.top, width: r.width, height: r.height });
-  }
-
   /** Track whether the user has unsaved edits (to warn on close). */
   const isDirty = () =>
     title() !== props.card.title ||
@@ -67,24 +75,15 @@ export default function EditModal(props: EditModalProps) {
     priority() !== props.card.priority ||
     treeSourceId() !== (props.card.treeSourceId ?? '');
 
-  function maybeClose() {
-    if (!preview() && isDirty()) {
-      if (!window.confirm('Discard unsaved changes?')) return;
-    }
-    props.onCancel();
-  }
+  // Lift dirty/preview state to the wrapper so its close guard can read it.
+  createEffect(() => props.onDirtyChange(isDirty()));
+  createEffect(() => props.onPreviewChange(preview()));
 
-  onMount(() => {
-    readColumnRect();
-    const onResize = () => { readColumnRect(); setViewportH(window.innerHeight); };
-    window.addEventListener('resize', onResize);
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') maybeClose(); };
-    window.addEventListener('keydown', onKey);
-    onCleanup(() => {
-      window.removeEventListener('resize', onResize);
-      window.removeEventListener('keydown', onKey);
-    });
-  });
+  // Close request is routed through the wrapper's guarded `onClose` so the
+  // unsaved-changes prompt lives in one place (shared by Escape/backdrop/×).
+  function maybeClose() {
+    props.onClose();
+  }
 
   function submit(e: Event) {
     e.preventDefault();
@@ -101,109 +100,71 @@ export default function EditModal(props: EditModalProps) {
     });
   }
 
-  const rect = columnRect();
-  const anchored = rect !== null;
-  const top = rect ? Math.max(rect.top, 8) : 0;
-  const maxHeight = rect ? Math.min(rect.height, viewportH() - top - 8) : 0;
-
   return (
-    <div
-      class="fixed inset-0 z-50 bg-black/50 ticket-backdrop"
-      classList={{
-        'flex items-start justify-center pt-16 px-4': !anchored,
-      }}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Edit card"
-      onClick={maybeClose}
+    <form
+      class="board-scroll bg-surface rounded-[var(--radius-card)] border border-border-subtle shadow-2xl ticket-panel overflow-y-auto"
+      onSubmit={submit}
     >
-      <form
-        class="board-scroll bg-surface rounded-[var(--radius-card)] border border-border-subtle shadow-2xl ticket-panel overflow-y-auto"
-        classList={{
-          'fixed': anchored,
-          'w-full max-w-2xl max-h-[85vh]': !anchored,
-          'max-h-[85vh]': !anchored,
-        }}
-        style={anchored
-          ? { left: `${rect!.left}px`, top: `${top}px`, width: `${rect!.width}px`, 'max-height': `${maxHeight}px` }
-          : undefined}
-        onClick={(e) => e.stopPropagation()}
-        onSubmit={submit}
-      >
-        <div class={`priority-strip ${PRIORITY_STRIP[props.card.priority]}`} aria-hidden="true" />
-        <div class="p-4">
-          <div class="flex items-start justify-between gap-3 mb-3">
-            <Show
-              when={!preview()}
-              fallback={
-                <h2 class="text-lg font-semibold text-ink leading-snug break-words">{title()}</h2>
-              }
-            >
-              <label for="edit-title" class="sr-only">Title</label>
-              <input
-                id="edit-title"
-                name="title"
-                autocomplete="off"
-                class="w-full text-lg font-semibold bg-transparent text-ink outline-none border-b border-transparent focus:border-accent pb-0.5"
-                value={title()}
-                onInput={(e) => setTitle(e.currentTarget.value)}
-                placeholder="Title…"
-                autofocus
-              />
-            </Show>
-            <button
-              type="button"
+      <div class={`priority-strip ${PRIORITY_STRIP[props.card.priority]}`} aria-hidden="true" />
+      <div class="p-4">
+        <div class="flex items-start justify-between gap-3 mb-3">
+          <Show
+            when={!preview()}
+            fallback={
+              <h2 class="text-lg font-semibold text-ink leading-snug break-words">{title()}</h2>
+            }
+          >
+            <label for="edit-title" class="sr-only">Title</label>
+            <input
+              id="edit-title"
+              name="title"
+              autocomplete="off"
+              class="w-full text-lg font-semibold bg-transparent text-ink outline-none border-b border-transparent focus:border-accent pb-0.5"
+              value={title()}
+              onInput={(e) => setTitle(e.currentTarget.value)}
+              placeholder="Title…"
+              autofocus
+            />
+          </Show>
+            <Dialog.CloseTrigger
               class="shrink-0 text-xl text-ink-secondary hover:text-ink leading-none px-1"
               aria-label="Close"
-              onClick={maybeClose}
             >
               ×
-            </button>
+            </Dialog.CloseTrigger>
           </div>
 
           <div class="flex items-center justify-between gap-2 mb-3">
             <div class="flex items-center gap-1.5 min-w-0">
               <span class={`priority-pill ${PRIORITY_PILL[props.card.priority]}`}>{props.card.priority}</span>
-              <Show when={props.sourceRef}>
-                <span class="metadata-chip">{props.sourceRef}</span>
+              <Show when={props.card.sourceRef}>
+                <span class="metadata-chip">{props.card.sourceRef}</span>
               </Show>
               <Show when={preview() && treeSourceLabel()}>
                 <span class="metadata-chip">{treeSourceLabel()}</span>
               </Show>
             </div>
-            <div class="segmented shrink-0" role="tablist" aria-label="View mode" onKeyDown={(e) => {
-              if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-                e.preventDefault();
-                setPreview(!preview());
-                // Focus the newly-active tab.
-                queueMicrotask(() => {
-                  const tabs = (e.currentTarget as HTMLElement).querySelectorAll('[role="tab"]');
-                  const idx = preview() ? 0 : 1;
-                  (tabs[idx] as HTMLElement)?.focus();
-                });
-              }
-            }}>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={preview()}
-                class="segmented-btn"
-                classList={{ 'segmented-active': preview() }}
-                onClick={() => setPreview(true)}
-              >
-                Preview
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={!preview()}
-                class="segmented-btn"
-                classList={{ 'segmented-active': !preview() }}
-                onClick={() => setPreview(false)}
-              >
-                Edit
-              </button>
-            </div>
+            <Tabs.Root
+              value={preview() ? 'preview' : 'edit'}
+              onValueChange={(e) => setPreview(e.value === 'preview')}
+            >
+              <Tabs.List class="segmented shrink-0" aria-label="View mode">
+                <Tabs.Trigger
+                  value="preview"
+                  class="segmented-btn"
+                  classList={{ 'segmented-active': preview() }}
+                >
+                  Preview
+                </Tabs.Trigger>
+                <Tabs.Trigger
+                  value="edit"
+                  class="segmented-btn"
+                  classList={{ 'segmented-active': !preview() }}
+                >
+                  Edit
+                </Tabs.Trigger>
+              </Tabs.List>
+            </Tabs.Root>
           </div>
 
           <div class="h-px bg-border-subtle mb-3" />
@@ -236,31 +197,27 @@ export default function EditModal(props: EditModalProps) {
 
           <Show when={!preview()}>
             <label class="block text-xs font-semibold text-ink-secondary mt-3 mb-1" for="edit-priority">Priority</label>
-            <select
-              id="edit-priority"
+            <ArkSelect
+              items={PRIORITIES.map((p) => ({ label: p, value: p }))}
+              value={priority()}
+              onValueChange={(v) => setPriority(v as Priority)}
               name="priority"
               class={FIELD}
-              value={priority()}
-              onChange={(e) => setPriority(e.currentTarget.value as Priority)}
-            >
-              <For each={PRIORITIES}>{(p) => <option value={p}>{p}</option>}</For>
-            </select>
+            />
 
             <label class="block text-xs font-semibold text-ink-secondary mt-3 mb-1" for="edit-tree-source">
               Tree source <span class="font-normal text-ink-muted">(optional)</span>
             </label>
-            <select
-              id="edit-tree-source"
+            <ArkSelect
+              items={[
+                { label: '(none)', value: '' },
+                ...props.treeSources().map((s) => ({ label: s.label, value: s.id })),
+              ]}
+              value={treeSourceId()}
+              onValueChange={setTreeSourceId}
               name="tree_source"
               class={FIELD}
-              value={treeSourceId()}
-              onChange={(e) => setTreeSourceId(e.currentTarget.value)}
-            >
-              <option value="">(none)</option>
-              <For each={props.treeSources()}>
-                {(src) => <option value={src.id}>{src.label}</option>}
-              </For>
-            </select>
+            />
           </Show>
 
           <Show when={error()}>
@@ -286,6 +243,165 @@ export default function EditModal(props: EditModalProps) {
           </div>
         </div>
       </form>
-    </div>
+  );
+}
+
+// Column-rect snapshot for anchoring the modal to the edited card's column.
+type ColumnRect = { left: number; top: number; width: number; height: number };
+
+export default function EditModal(props: EditModalProps) {
+  const [columnRect, setColumnRect] = createSignal<ColumnRect | null>(null);
+  const [viewportH, setViewportH] = createSignal(typeof window !== 'undefined' ? window.innerHeight : 0);
+  // Lifted from the form so the Dialog.Root-level close guard can read them.
+  const [isDirty, setIsDirty] = createSignal(false);
+  const [isPreview, setIsPreview] = createSignal(true);
+
+  // Forward dirty state to Board so it can guard card-switching.
+  createEffect(() => props.onDirtyChange?.(isDirty()));
+  // Edge case 2B (dedup): at most one persistent confirmation toast per
+  // modal instance. Holds the active toast id, or null when none is shown.
+  const [pendingConfirmToastId, setPendingConfirmToastId] = createSignal<string | null>(null);
+
+  function readColumnRect() {
+    const card = props.card;
+    if (!card) { setColumnRect(null); return; }
+    const el = document.querySelector(`[data-column-id="${card.column}"]`);
+    if (!el) { setColumnRect(null); return; }
+    const r = (el as HTMLElement).getBoundingClientRect();
+    setColumnRect({ left: r.left, top: r.top, width: r.width, height: r.height });
+  }
+
+  // Re-read the column rect whenever the dialog opens or the edited card changes.
+  createEffect(() => {
+    if (!props.open || !props.card) return;
+    readColumnRect();
+  });
+
+  // When the modal closes (e.g. via Save), dismiss any lingering
+  // confirmation toast so it doesn't outlive the editing session.
+  createEffect((prevOpen: boolean | undefined) => {
+    const open = props.open;
+    if (prevOpen && !open) {
+      const pendingId = pendingConfirmToastId();
+      if (pendingId !== null) {
+        toaster.dismiss(pendingId);
+        setPendingConfirmToastId(null);
+      }
+    }
+    return open;
+  });
+
+  onMount(() => {
+    const onResize = () => { if (props.open) { readColumnRect(); setViewportH(window.innerHeight); } };
+    window.addEventListener('resize', onResize);
+    onCleanup(() => window.removeEventListener('resize', onResize));
+  });
+
+  const anchored = () => columnRect() !== null;
+  const top = () => columnRect() ? Math.max(columnRect()!.top, 8) : 0;
+  const maxHeight = () => columnRect() ? Math.min(columnRect()!.height, viewportH() - top() - 8) : 0;
+
+  /**
+   * Guarded close — replaces the old synchronous `window.confirm` with a
+   * persistent confirmation toast (decision 2). The modal stays open until
+   * the user clicks "Discard" in the toast. Implements all three edge cases
+   * from decision 2B:
+   *   - Dedup: one active confirmation toast per modal.
+   *   - Second-Esc: while a toast is shown, Esc dismisses the toast (not the
+   *     modal). First Esc on dirty modal shows the toast; subsequent Esc
+   *     while toast visible dismisses the toast; Esc while clean closes.
+   *   - Action-to-modal routing: the toast action captures `props.onOpenChange`
+   *     in a closure. If the card was deleted/swapped while the toast was
+   *     visible, `props.card` is null — dismiss silently, no crash.
+   */
+  function requestClose() {
+    // Second-Esc / dedup: a confirmation toast is already shown. Dismiss it
+    // and keep the modal open.
+    const pendingId = pendingConfirmToastId();
+    if (pendingId !== null) {
+      toaster.dismiss(pendingId);
+      setPendingConfirmToastId(null);
+      return;
+    }
+    // Dirty: show a persistent confirmation toast, don't close yet.
+    if (!isPreview() && isDirty()) {
+      const id = toaster.create({
+        title: 'Discard unsaved changes?',
+        type: 'warning',
+        duration: Infinity,
+        action: {
+          label: 'Discard',
+          onClick: () => {
+            // Action-to-modal routing guard: the edited card may have been
+            // deleted/swapped while the toast was visible. Dismiss silently.
+            if (props.card === null) {
+              toaster.dismiss(id);
+              setPendingConfirmToastId(null);
+              return;
+            }
+            toaster.dismiss(id);
+            setPendingConfirmToastId(null);
+            props.onOpenChange(false);
+          },
+        },
+      });
+      setPendingConfirmToastId(id);
+      return;
+    }
+    // Clean: close immediately.
+    props.onOpenChange(false);
+  }
+
+  return (
+    <Dialog.Root
+      open={props.open}
+      lazyMount
+      unmountOnExit
+      closeOnEscape
+      closeOnInteractOutside
+      aria-label="Edit card"
+      onOpenChange={(e) => { if (!e.open) requestClose(); }}
+      onEscapeKeyDown={(e) => {
+        // Handle Escape ourselves so the dirty-guard prompt runs exactly once.
+        e.preventDefault();
+        requestClose();
+      }}
+      onInteractOutside={(e) => {
+        // Handle backdrop/outside clicks ourselves for the same reason.
+        e.preventDefault();
+        requestClose();
+      }}
+    >
+      <Portal>
+        <Dialog.Backdrop class="fixed inset-0 z-50 bg-black/50 ticket-backdrop" />
+        <Dialog.Positioner class="fixed z-50">
+          <div
+            classList={{ 'flex items-start justify-center pt-16 px-4': !anchored() }}
+            style={anchored()
+              ? { left: `${columnRect()!.left}px`, top: `${top()}px`, width: `${columnRect()!.width}px` }
+              : { inset: '0' }}
+          >
+            <Dialog.Content
+              class="board-scroll bg-surface rounded-[var(--radius-card)] border border-border-subtle shadow-2xl ticket-panel overflow-y-auto"
+              classList={{ 'w-full max-w-2xl max-h-[85vh]': !anchored() }}
+              style={anchored() ? { 'max-height': `${maxHeight()}px` } : undefined}
+            >
+              <Show when={props.card} keyed>
+                {(card) => (
+                  <EditModalForm
+                    card={card}
+                    treeSources={props.treeSources}
+                    onClose={requestClose}
+                    onSave={props.onSave}
+                    onDirtyChange={setIsDirty}
+                    onPreviewChange={setIsPreview}
+                  />
+                )}
+              </Show>
+            </Dialog.Content>
+          </div>
+        </Dialog.Positioner>
+      </Portal>
+    </Dialog.Root>
   );
 }

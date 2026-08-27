@@ -1,8 +1,11 @@
 import { Show, createSignal, onMount } from 'solid-js';
+import { Toaster, Toast } from '@ark-ui/solid/toast';
 import Board, { reload } from './components/Board.tsx';
 import Settings from './components/Settings.tsx';
 import MergeModal from './components/MergeModal.tsx';
 import ClearSourceModal from './components/ClearSourceModal.tsx';
+import SyncSummaryModal, { type SyncSummaryEntry } from './components/SyncSummaryModal.tsx';
+import { toaster } from './components/ui/toaster.ts';
 import {
   getSetting,
   listSources,
@@ -22,6 +25,7 @@ function App() {
   // Source id whose sync produced the current conflicts; needed to resolve.
   const [pendingSourceId, setPendingSourceId] = createSignal<string | null>(null);
   const [unmatchedStatuses, setUnmatchedStatuses] = createSignal<string[] | null>(null);
+  const [syncSummary, setSyncSummary] = createSignal<SyncSummaryEntry[] | null>(null);
 
   onMount(async () => {
     setLastSynced(await getSetting('last_synced_at'));
@@ -39,24 +43,29 @@ function App() {
     setConflicts(null);
     setPendingSourceId(null);
     setUnmatchedStatuses(null);
+    setSyncSummary(null);
     try {
       const sources = await listSources();
       const enabled = sources.filter((s) => s.enabled);
       const unmatched = new Set<string>();
+      const summary: SyncSummaryEntry[] = [];
       let lastSyncedAt: string | null = null;
       for (const s of enabled) {
         const result = await syncSource(s.id);
+        summary.push({ label: s.label, sourceType: s.sourceType, count: result.importedCount });
         for (const u of result.unmappedStatuses) unmatched.add(u);
         if (result.conflicts.length > 0) {
           setConflicts(result.conflicts);
           setPendingSourceId(s.id);
           if (unmatched.size > 0) setUnmatchedStatuses([...unmatched].sort());
+          setSyncSummary(summary);
           return; // wait for the user to resolve
         }
         lastSyncedAt = result.syncedAt;
       }
       if (unmatched.size > 0) setUnmatchedStatuses([...unmatched].sort());
       if (lastSyncedAt) await finishSync(lastSyncedAt);
+      setSyncSummary(summary);
     } catch (e) {
       setSyncError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -86,6 +95,7 @@ function App() {
     await reload();
     await setSetting('last_synced_at', syncedAt);
     setLastSynced(syncedAt);
+    toaster.success({ title: 'Sync complete', description: lastSyncedLabel() });
   }
 
   function lastSyncedLabel(): string {
@@ -111,6 +121,7 @@ function App() {
         <div class="flex gap-2 shrink-0">
           <button
             type="button"
+            data-testid="sync-button"
             class="px-3 py-1.5 text-sm font-medium rounded bg-accent hover:bg-accent-hover text-base transition-colors disabled:opacity-50"
             disabled={syncing()}
             onClick={() => void handleSync()}
@@ -152,28 +163,65 @@ function App() {
           </span>
         </div>
       )}
-      {settingsVisible() && <Settings onClose={() => setSettingsVisible(false)} />}
-      {clearVisible() && (
-        <ClearSourceModal
-          onClose={() => {
+      <Settings
+        open={settingsVisible()}
+        onOpenChange={(o) => {
+          if (!o) {
+            setSettingsVisible(false);
+            void reload();
+          }
+        }}
+      />
+      <ClearSourceModal
+        open={clearVisible()}
+        onOpenChange={(o) => {
+          if (!o) {
             setClearVisible(false);
             setLastSynced(null);
             void setSetting('last_synced_at', '');
-          }}
-        />
-      )}
+          }
+        }}
+      />
       <Board />
-      <Show when={conflicts()}>
-        <MergeModal
-          conflicts={conflicts()!}
-          onResolve={(resolutions) => void handleResolve(resolutions)}
-          onCancel={() => {
+      <MergeModal
+        conflicts={conflicts() ?? []}
+        open={!!conflicts()}
+        onOpenChange={(o) => {
+          if (!o) {
             setConflicts(null);
             setPendingSourceId(null);
             setSyncing(false);
-          }}
+          }
+        }}
+        onResolve={(resolutions) => void handleResolve(resolutions)}
+        onCancel={() => {
+          setConflicts(null);
+          setPendingSourceId(null);
+          setSyncing(false);
+        }}
+      />
+      <Show when={syncSummary() && !conflicts()}>
+        <SyncSummaryModal
+          entries={syncSummary()!}
+          syncedAt={lastSynced() ?? undefined}
+          onClose={() => setSyncSummary(null)}
         />
       </Show>
+      <Toaster toaster={toaster}>
+        {(toast) => (
+          <Toast.Root
+            class="bg-surface border border-border-subtle rounded-[var(--radius-card)] shadow-2xl px-4 py-3 min-w-[240px]"
+            data-type={toast().type}
+          >
+            <Toast.Title class="text-sm font-semibold text-ink" />
+            <Toast.Description class="text-xs text-ink-secondary" />
+            <Show when={toast().action}>
+              <Toast.ActionTrigger class="mt-2 text-xs font-semibold text-accent hover:text-accent-hover" />
+            </Show>
+            <Toast.CloseTrigger class="text-ink-secondary hover:text-ink text-xs ml-2" aria-label="Close" />
+          </Toast.Root>
+        )}
+      </Toaster>
     </div>
   );
 }
