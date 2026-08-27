@@ -81,6 +81,8 @@ pub struct SyncResult {
     pub conflicts: Vec<SyncConflict>,
     pub unmapped_statuses: Vec<String>,
     pub synced_at: String,
+    /// Number of cards created or updated this run (excludes noops/conflicts).
+    pub imported_count: usize,
 }
 
 /// User's per-field resolution for one conflicting card, sent from the
@@ -232,6 +234,7 @@ pub async fn sync_source(app: AppHandle, source_id: String) -> Result<SyncResult
 
     let mut conflicts: Vec<SyncConflict> = Vec::new();
     let mut unmapped: HashSet<String> = HashSet::new();
+    let mut imported: usize = 0;
     let conn = open_db(&app)?;
 
     for raw in &raw_cards {
@@ -253,6 +256,7 @@ pub async fn sync_source(app: AppHandle, source_id: String) -> Result<SyncResult
                     upsert_card_from_sync(app.clone(), card.clone()).await?;
                     let snap = snapshot_from_card(&card, source_type, &synced_at);
                     save_snapshot(app.clone(), snap).await?;
+                    imported += 1;
                 }
             }
             SyncDecisionType::Conflict => {
@@ -282,6 +286,7 @@ pub async fn sync_source(app: AppHandle, source_id: String) -> Result<SyncResult
         conflicts,
         unmapped_statuses: unmapped.into_iter().collect(),
         synced_at,
+        imported_count: imported,
     })
 }
 
