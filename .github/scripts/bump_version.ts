@@ -17,10 +17,16 @@ async function git(args: string[]): Promise<string> {
   return run(["git", ...args]);
 }
 
-// Resolve last tag reachable on current branch.
+// Resolve the highest-version tag across all refs (not just those
+// reachable from HEAD). `git describe --tags --abbrev=0` only finds
+// tags reachable from HEAD, so a tag created on the `releases` branch
+// is invisible when running on `main` — causing the script to fall
+// back to "no prior tag" and re-emit v1.0.0, colliding with the
+// existing tag.
 async function lastTag(): Promise<string | null> {
-  const tag = await git(["describe", "--tags", "--abbrev=0"]).catch(() => "");
-  return tag || null;
+  const out = await git(["tag", "--list", "--sort=-v:refname"]).catch(() => "");
+  const first = out.split("\n").find((l) => /^v?\d+\.\d+\.\d+/.test(l.trim()));
+  return first?.trim() || null;
 }
 
 function parseSemver(tag: string): [number, number, number] {
