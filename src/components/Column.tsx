@@ -1,6 +1,6 @@
 import { For, Show, createSignal } from 'solid-js';
 import { createDroppable, useDragDropContext } from '@thisbeyond/solid-dnd';
-import type { ColumnId, KanbanCard, Priority, TreeSource } from '../types.ts';
+import type { ColumnId, KanbanCard, TreeSource } from '../types.ts';
 import Card from './Card.tsx';
 
 declare module 'solid-js' {
@@ -16,9 +16,9 @@ interface ColumnProps {
   cards: () => KanbanCard[];
   treeSources: () => TreeSource[];
   onAdd: (title: string) => void;
-  onEdit: (id: string, title: string, description: string, priority: Priority, treeSourceId: string) => void;
+  onOpenEdit: (card: KanbanCard) => void;
   onDelete: (id: string) => void;
-  onMove: (id: string, column: ColumnId) => void;
+  onContextMenuOpen: (card: KanbanCard, point: { x: number; y: number }) => void;
 }
 
 import { PRIORITIES } from '../types.ts';
@@ -85,7 +85,7 @@ export default function Column(props: ColumnProps) {
           }
         >
           <For each={sortedCards()}>
-            {(card) => <Card card={card} treeSources={props.treeSources} onEdit={props.onEdit} onDelete={props.onDelete} onMove={props.onMove} />}
+            {(card) => <Card card={card} treeSources={props.treeSources} onOpenEdit={props.onOpenEdit} onDelete={props.onDelete} onContextMenuOpen={props.onContextMenuOpen} />}
           </For>
         </Show>
       </div>

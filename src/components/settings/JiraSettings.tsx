@@ -2,6 +2,7 @@ import { For, Show, createEffect, createSignal, onMount } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
 import type { SourceInstance, StatusMapping } from '../../types.ts';
 import { DEFAULT_STATUS_MAPPING } from '../../columns.ts';
+import { toaster } from '../ui/toaster.ts';
 import {
   ASSIGNEE_MODE_OPTIONS,
   DEFAULT_JQL_PARTS,
@@ -108,7 +109,11 @@ export default function JiraSettings(props: JiraSettingsProps) {
         setProjects(list as JiraProject[]);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // Action-result error → toast (decision 8).
+      toaster.error({
+        title: 'Could not fetch projects',
+        description: e instanceof Error ? e.message : String(e),
+      });
     } finally {
       setProjectsLoading(false);
     }
@@ -125,7 +130,11 @@ export default function JiraSettings(props: JiraSettingsProps) {
         setPreview(jql);
       } catch (e) {
         setPreview('');
-        setError(e instanceof Error ? e.message : String(e));
+        // Action-result error → toast (decision 8).
+        toaster.error({
+          title: 'JQL preview failed',
+          description: e instanceof Error ? e.message : String(e),
+        });
       } finally {
         setPreviewLoading(false);
       }
@@ -154,6 +163,7 @@ export default function JiraSettings(props: JiraSettingsProps) {
     };
     const finalParts: JqlParts = { ...jqlParts(), statuses: splitStatuses(statusesText()) };
     if (preview() === '') {
+      // Form validation → inline `<p role="alert">` (decision 8).
       setError('JQL is empty — set at least one field (e.g. project or assignee).');
       return;
     }
@@ -168,7 +178,11 @@ export default function JiraSettings(props: JiraSettingsProps) {
       };
       await safeProps.onSave?.(config, mapping);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      // Action-result error → toast (decision 8).
+      toaster.error({
+        title: 'Save failed',
+        description: e instanceof Error ? e.message : String(e),
+      });
     } finally {
       setSaving(false);
     }
