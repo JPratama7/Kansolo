@@ -441,14 +441,18 @@ export default function Settings(props: SettingsProps) {
                                 name="source_type"
                                 class={INPUT}
                               />
+                              <label class="block text-xs font-semibold text-ink-secondary" for="settings-add-source-label">
+                                Label
+                              </label>
                               <input
+                                id="settings-add-source-label"
                                 type="text"
                                 class={INPUT}
                                 name="source_label"
                                 autocomplete="off"
                                 value={addLabel()}
                                 onInput={(e) => setAddLabel(e.currentTarget.value)}
-                                placeholder="Label (e.g. Work Jira)…"
+                                placeholder="e.g. Work Jira…"
                               />
                               <div class="flex gap-2 justify-end">
                                 <button

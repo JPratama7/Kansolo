@@ -376,6 +376,7 @@ export default function EditModal(props: EditModalProps) {
         <Dialog.Backdrop class="fixed inset-0 z-50 bg-black/50 ticket-backdrop" />
         <Dialog.Positioner class="fixed z-50">
           <div
+            class="fixed"
             classList={{ 'flex items-start justify-center pt-16 px-4': !anchored() }}
             style={anchored()
               ? { left: `${columnRect()!.left}px`, top: `${top()}px`, width: `${columnRect()!.width}px` }
