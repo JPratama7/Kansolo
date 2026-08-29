@@ -1,8 +1,4 @@
 @import "tailwindcss";
-@plugin "daisyui" {
-  themes: false;
-  logs: false;
-}
 
 @theme {
   /* Surfaces — layered elevation */
@@ -185,7 +181,7 @@ select option:hover {
 }
 
 .trello-card {
-  transition: background 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+  transition: background 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease, opacity 0.15s ease;
   /* Skip rendering off-screen cards (lightweight virtualization). */
   content-visibility: auto;
   contain-intrinsic-size: auto 80px;
@@ -194,12 +190,55 @@ select option:hover {
   background: var(--color-hover);
   border-color: var(--color-border);
 }
-/* Dragged card: disable content-visibility so contain:paint doesn't
-   interfere with the drag transform or clip the card during movement. */
+/* Dragged source card: disable content-visibility so contain:paint
+   doesn't interfere with the drag transform or clip the card during
+   movement. Opacity is driven here (not via Tailwind's opacity-0) so
+   the .trello-card transition owns the fade cleanly. The source card
+   fades out while the overlay clone carries the visual. */
 .trello-card.is-dragging {
   content-visibility: visible;
   contain: none;
+  opacity: 0;
 }
+/* Drag overlay clone: needs the same containment overrides as the
+   dragging source so it paints above all columns without clipping,
+   but must stay fully visible (it IS the visible proxy). */
+.trello-card.is-drag-overlay {
+  content-visibility: visible;
+  contain: none;
+  opacity: 0.85;
+}
+
+/* --- Card loading skeletons: quiet ambient shimmer on the slate palette --- */
+/* One cue, not a light show: a slow left-to-right highlight sweep across
+   elevated blocks on the surface. Matches the real card silhouette so the
+   layout doesn't shift when cards arrive. */
+@keyframes skeleton-shimmer {
+  from { background-position: -200% 0; }
+  to   { background-position: 200% 0; }
+}
+.card-skeleton {
+  background: var(--color-surface);
+}
+.card-skeleton-strip {
+  height: 4px;
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+  background: var(--color-elevated);
+}
+.card-skeleton-line {
+  height: 0.7rem;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--color-elevated) 0%,
+    var(--color-hover) 50%,
+    var(--color-elevated) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+.card-skeleton-line--sm { height: 0.55rem; }
+.card-skeleton-line--xs { height: 0.5rem; }
 
 .add-link {
   color: var(--color-ink-secondary);
@@ -223,6 +262,10 @@ select option:hover {
 @media (prefers-reduced-motion: reduce) {
   .trello-card {
     transition: none;
+  }
+  .card-skeleton-line {
+    animation: none;
+    background: var(--color-elevated);
   }
 }
 
@@ -332,6 +375,38 @@ select option:hover {
   padding: 0.05rem 0.35rem;
 }
 
+/* --- Sync summary modal: delivery-receipt feel --- */
+@keyframes sync-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sync-panel-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+@keyframes sync-row-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.sync-backdrop { animation: sync-backdrop-in 140ms ease-out both; }
+.sync-panel    { animation: sync-panel-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+.sync-row      { animation: sync-row-in 220ms ease-out both; }
+
+/* Stacked proportion bar — each segment width set inline by JS.
+   Grow transition runs after mount via a .is-mounted class. */
+.sync-bar {
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--color-base);
+  overflow: hidden;
+  display: flex;
+}
+.sync-bar-seg {
+  height: 100%;
+  width: 0;
+  transition: width 480ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.sync-bar.is-mounted .sync-bar-seg {
+  width: var(--seg-width, 0);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ticket-backdrop,
   .ticket-panel { animation: none; }
@@ -343,4 +418,44 @@ select option:hover {
   .settings-closing .settings-panel {
     animation: none;
   }
+  .sync-backdrop,
+  .sync-panel,
+  .sync-row { animation: none; }
+  .sync-bar-seg { transition: none; width: var(--seg-width, 0); }
+}
+
+/* --- Ark UI Toast: region + entrance/exit transitions --- */
+[data-scope='toast'][data-part='region'] {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+}
+[data-scope='toast'][data-part='root'] {
+  --x: 0;
+  --y: 0;
+  --scale: 1;
+  --opacity: 1;
+  pointer-events: auto;
+  translate: var(--x) var(--y);
+  scale: var(--scale);
+  opacity: var(--opacity);
+  transition: translate 0.2s ease, scale 0.2s ease, opacity 0.2s ease;
+}
+[data-scope='toast'][data-part='root'][data-state='open'] {
+  --y: 0;
+  --scale: 1;
+  --opacity: 1;
+}
+[data-scope='toast'][data-part='root'][data-state='closed'] {
+  --opacity: 0;
+  --scale: 0.96;
+}
+/* Type accent on the left edge — subtle color cue per toast type. */
+[data-scope='toast'][data-part='root'][data-type='success'] { border-left: 3px solid var(--color-col-done); }
+[data-scope='toast'][data-part='root'][data-type='error']   { border-left: 3px solid var(--color-p-urgent); }
+[data-scope='toast'][data-part='root'][data-type='warning'] { border-left: 3px solid var(--color-p-high); }
+[data-scope='toast'][data-part='root'][data-type='info']    { border-left: 3px solid var(--color-col-ongoing); }
+
+@media (prefers-reduced-motion: reduce) {
+  [data-scope='toast'][data-part='root'] { transition: none; }
 }

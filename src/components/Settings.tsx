@@ -1,4 +1,6 @@
-import { For, Show, createComponent, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
+import { For, Show, createComponent, createEffect, createMemo, createSignal } from 'solid-js';
+import { Portal } from 'solid-js/web';
+import { Dialog } from '@ark-ui/solid/dialog';
 import { invoke } from '@tauri-apps/api/core';
 import type { McpStatus, SourceInstance, SourceTypeMeta, StatusMapping, TreeSource } from '../types.ts';
 import { DEFAULT_STATUS_MAPPING } from '../columns.ts';
@@ -16,10 +18,12 @@ import {
   updateTreeSource,
 } from '../db.ts';
 import { SETTINGS_REGISTRY } from './settings/registry.ts';
-import { reload } from './Board.tsx';
+import { ArkSelect } from './ui/ArkSelect.tsx';
+import { toaster } from './ui/toaster.ts';
 
 interface SettingsProps {
-  onClose: () => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }
 
 /** Coerce a stored setting string to a boolean; default false unless "true". */
@@ -38,9 +42,6 @@ const SECTIONS = [
 type SectionId = (typeof SECTIONS)[number]['id'];
 
 export default function Settings(props: SettingsProps) {
-  onCleanup(() => { void reload(); });
-
-  // --- Source instances (data-driven via listSourceTypes/listSources) ---
   const [sourceTypes, setSourceTypes] = createSignal<SourceTypeMeta[]>([]);
   const [sources, setSources] = createSignal<SourceInstance[]>([]);
   const [editing, setEditing] = createSignal<SourceInstance | null>(null);
@@ -55,7 +56,6 @@ export default function Settings(props: SettingsProps) {
   const [addType, setAddType] = createSignal<string>('');
   const [addLabel, setAddLabel] = createSignal('');
 
-  // --- App-level (flat) settings: MCP, tray, editor, tree sources ---
   const [mcpEnabled, setMcpEnabled] = createSignal(false);
   const [mcpPort, setMcpPort] = createSignal(27816);
   const [mcpRunning, setMcpRunning] = createSignal(false);
@@ -71,18 +71,14 @@ export default function Settings(props: SettingsProps) {
   const [editTreeEditor, setEditTreeEditor] = createSignal('');
 
   const [error, setError] = createSignal<string | null>(null);
+  // At most one persistent delete-confirmation toast at a time (decision 2B).
+  const [pendingConfirmToastId, setPendingConfirmToastId] = createSignal<string | null>(null);
 
-  // --- Dialog shell: active section, smooth close, persisted size ---
   const [activeSection, setActiveSection] = createSignal<SectionId>('sources');
-  const [closing, setClosing] = createSignal(false);
   const [panelW, setPanelW] = createSignal(0);
   const [panelH, setPanelH] = createSignal(0);
   let panelEl: HTMLDivElement | undefined;
   let resizeState: { x: number; y: number; w: number; h: number } | null = null;
-
-  const reduceMotion =
-    typeof window !== 'undefined' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Paired instance + component — both guaranteed non-null when truthy.
   // Avoids signal timing issues where editing() and EditComponent() could
@@ -98,43 +94,35 @@ export default function Settings(props: SettingsProps) {
     setSources(await listSources());
   }
 
-  onMount(async () => {
-    setSourceTypes(await listSourceTypes());
-    await refreshSources();
-    const settings = await getAllSettings();
-    setMcpEnabled(isTrue(settings['mcp_enabled']));
-    setMcpPort(parseInt(settings['mcp_port'] ?? '27816', 10) || 27816);
-    setCloseToTray(settings['close_to_tray'] !== 'false');
-    setEditorCommand(settings['editor_command'] ?? 'code');
-    const savedW = parseInt(settings['settings_w'] ?? '', 10);
-    const savedH = parseInt(settings['settings_h'] ?? '', 10);
-    if (savedW > 0) setPanelW(savedW);
-    if (savedH > 0) setPanelH(savedH);
-    try {
-      const status = await invoke<McpStatus>('mcp_status');
-      setMcpRunning(status.running);
-    } catch {
-      setMcpRunning(false);
-    }
-    setTreeSources(await listTreeSources());
-
-    // Esc closes; smooth exit unless reduced motion.
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') requestClose();
-    };
-    window.addEventListener('keydown', onKey);
-    onCleanup(() => window.removeEventListener('keydown', onKey));
+  // Load all settings data each time the dialog opens (fresh view per open).
+  createEffect(() => {
+    if (!props.open) return;
+    void (async () => {
+      setSourceTypes(await listSourceTypes());
+      await refreshSources();
+      const settings = await getAllSettings();
+      setMcpEnabled(isTrue(settings['mcp_enabled']));
+      setMcpPort(parseInt(settings['mcp_port'] ?? '27816', 10) || 27816);
+      setCloseToTray(settings['close_to_tray'] !== 'false');
+      setEditorCommand(settings['editor_command'] ?? 'code');
+      const savedW = parseInt(settings['settings_w'] ?? '', 10);
+      const savedH = parseInt(settings['settings_h'] ?? '', 10);
+      if (savedW > 0) setPanelW(savedW);
+      if (savedH > 0) setPanelH(savedH);
+      try {
+        const status = await invoke<McpStatus>('mcp_status');
+        setMcpRunning(status.running);
+      } catch {
+        setMcpRunning(false);
+      }
+      setTreeSources(await listTreeSources());
+    })();
   });
 
-  /** Smooth close: play the exit animation, then unmount via props.onClose. */
   function requestClose() {
-    if (closing()) return;
-    if (reduceMotion) { props.onClose(); return; }
-    setClosing(true);
-    setTimeout(props.onClose, 150);
+    props.onOpenChange(false);
   }
 
-  // --- Resize handle: drag to adjust size; persisted on pointerup. ---
   function onResizeStart(e: PointerEvent) {
     e.preventDefault();
     e.stopPropagation();
@@ -171,7 +159,6 @@ export default function Settings(props: SettingsProps) {
     }
   }
 
-  /** Open the per-source editor: load the registry component for its type. */
   function startEdit(src: SourceInstance) {
     setError(null);
     setEditing(src);
@@ -189,7 +176,6 @@ export default function Settings(props: SettingsProps) {
     }) => any);
   }
 
-  /** Persist the edited source's config + status mapping + label + enabled. */
   async function handleSaveEdit(config: Record<string, unknown>, statusMapping: StatusMapping) {
     const src = editing();
     if (!src) return;
@@ -199,23 +185,53 @@ export default function Settings(props: SettingsProps) {
       setEditing(null);
       setEditComponent(null);
       await refreshSources();
+      toaster.success({ title: 'Source saved', description: label });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
 
-  async function handleDeleteSource(id: string) {
-    if (!window.confirm('Delete this source and all cards it sourced? Local cards stay.')) return;
-    try {
-      await deleteSource(id);
-      if (editing()?.id === id) {
-        setEditing(null);
-        setEditComponent(null);
-      }
-      await refreshSources();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
+  /**
+   * Delete confirmation via persistent toast (decision 2). The actual
+   * deletion runs inside the toast action callback. Dedup: if a
+   * confirmation toast is already shown, dismiss it before creating a new
+   * one (decision 2B).
+   */
+  function handleDeleteSource(id: string) {
+    const existing = pendingConfirmToastId();
+    if (existing !== null) toaster.dismiss(existing);
+    const src = sources().find((s) => s.id === id);
+    const label = src?.label ?? id;
+    const id_ = toaster.create({
+      title: 'Delete this source and all cards it sourced?',
+      description: 'Local cards stay.',
+      type: 'warning',
+      duration: Infinity,
+      action: {
+        label: 'Delete',
+        onClick: () => {
+          toaster.dismiss(id_);
+          setPendingConfirmToastId(null);
+          void (async () => {
+            try {
+              await deleteSource(id);
+              if (editing()?.id === id) {
+                setEditing(null);
+                setEditComponent(null);
+              }
+              await refreshSources();
+              toaster.success({ title: 'Source deleted', description: label });
+            } catch (e) {
+              toaster.error({
+                title: 'Delete failed',
+                description: e instanceof Error ? e.message : String(e),
+              });
+            }
+          })();
+        },
+      },
+    });
+    setPendingConfirmToastId(id_);
   }
 
   async function handleToggleEnabled(src: SourceInstance, enabled: boolean) {
@@ -270,6 +286,7 @@ export default function Settings(props: SettingsProps) {
     setNewTreePath('');
     setNewTreeEditor('');
     setTreeSources(await listTreeSources());
+    toaster.success({ title: 'Tree source added', description: label });
   }
 
   async function handleDeleteTree(id: string) {
@@ -299,24 +316,27 @@ export default function Settings(props: SettingsProps) {
     'w-full text-sm rounded px-2 py-1.5 bg-base text-ink placeholder:text-ink-secondary border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent';
 
   return (
-    <div
-      class={'fixed inset-0 z-50 flex items-start justify-center pt-10 px-4 bg-black/50 ' +
-        (closing() ? 'settings-closing ' : '')}
-      role="dialog"
-      aria-modal="true"
-      onClick={requestClose}
+    <Dialog.Root
+      open={props.open}
+      lazyMount
+      unmountOnExit
+      closeOnEscape
+      closeOnInteractOutside
+      aria-label="Settings"
+      onOpenChange={(e) => props.onOpenChange(e.open)}
     >
-      <section
-        ref={panelEl}
-        class="settings-panel relative flex flex-col w-[640px] h-[560px] max-w-[90vw] max-h-[90vh] bg-surface rounded-[var(--radius-card)] border border-border-subtle shadow-2xl overflow-hidden"
-        aria-label="Settings"
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: panelW() ? `${panelW()}px` : undefined,
-          height: panelH() ? `${panelH()}px` : undefined,
-        }}
-      >
-        {/* Header */}
+      <Portal>
+        <Dialog.Backdrop class="fixed inset-0 z-50 bg-black/50" />
+        <Dialog.Positioner class="fixed inset-0 z-50 flex items-start justify-center pt-10 px-4">
+          <Dialog.Content
+            ref={panelEl}
+            class="settings-panel relative flex flex-col w-[640px] h-[560px] max-w-[90vw] max-h-[90vh] bg-surface rounded-[var(--radius-card)] border border-border-subtle shadow-2xl overflow-hidden"
+            aria-label="Settings"
+            style={{
+              width: panelW() ? `${panelW()}px` : undefined,
+              height: panelH() ? `${panelH()}px` : undefined,
+            }}
+          >
         <div class="flex items-center justify-between px-4 py-3 bg-surface border-b border-border-subtle">
           <h2 class="text-base font-bold text-ink">Settings</h2>
           <button
@@ -335,7 +355,6 @@ export default function Settings(props: SettingsProps) {
           </div>
         )}
 
-        {/* Two-pane body: rail + scrollable content */}
         <div class="flex flex-1 min-h-0">
           <nav class="w-36 shrink-0 border-r border-border-subtle bg-base/40 py-2 flex flex-col gap-0.5">
             <For each={SECTIONS}>
@@ -405,26 +424,26 @@ export default function Settings(props: SettingsProps) {
 
                           <Show when={addPickerOpen()}>
                             <div class="flex flex-col gap-2 rounded border border-border-subtle p-2 bg-base/40">
-                              <select
-                                class={INPUT}
-                                aria-label="Source type"
-                                name="source_type"
+                              <ArkSelect
+                                items={sourceTypes().map((t) => ({ label: t.label, value: t.source_type }))}
                                 value={addType()}
-                                onChange={(e) => setAddType(e.currentTarget.value)}
-                              >
-                                <option value="">(select type)</option>
-                                <For each={sourceTypes()}>
-                                  {(t) => <option value={t.source_type}>{t.label}</option>}
-                                </For>
-                              </select>
+                                onValueChange={setAddType}
+                                placeholder="(select type)"
+                                name="source_type"
+                                class={INPUT}
+                              />
+                              <label class="block text-xs font-semibold text-ink-secondary" for="settings-add-source-label">
+                                Label
+                              </label>
                               <input
+                                id="settings-add-source-label"
                                 type="text"
                                 class={INPUT}
                                 name="source_label"
                                 autocomplete="off"
                                 value={addLabel()}
                                 onInput={(e) => setAddLabel(e.currentTarget.value)}
-                                placeholder="Label (e.g. Work Jira)…"
+                                placeholder="e.g. Work Jira…"
                               />
                               <div class="flex gap-2 justify-end">
                                 <button
@@ -745,7 +764,6 @@ export default function Settings(props: SettingsProps) {
           </div>
         </div>
 
-        {/* Footer */}
         <div class="flex gap-2 justify-end px-4 py-3 bg-surface border-t border-border-subtle">
           <button
             type="button"
@@ -763,7 +781,6 @@ export default function Settings(props: SettingsProps) {
           </button>
         </div>
 
-        {/* Resize grip */}
         <div
           class="settings-grip"
           onPointerDown={onResizeStart}
@@ -784,7 +801,9 @@ export default function Settings(props: SettingsProps) {
           aria-label="Resize settings"
           tabindex={0}
         />
-      </section>
-    </div>
+          </Dialog.Content>
+        </Dialog.Positioner>
+      </Portal>
+    </Dialog.Root>
   );
 }
