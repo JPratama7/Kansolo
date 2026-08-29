@@ -64,12 +64,10 @@ export default function JiraSettings(props: JiraSettingsProps) {
   const [previewLoading, setPreviewLoading] = createSignal(false);
   let previewTimer: ReturnType<typeof setTimeout> | null = null;
 
-  /** Patch a single field of the jql parts signal. */
   function patchParts<K extends keyof JqlParts>(key: K, value: JqlParts[K]) {
     setJqlParts((prev) => ({ ...prev, [key]: value }));
   }
 
-  // Load initial values from the instance config + status mapping.
   onMount(() => {
     const cfg = safeProps.instance?.config ?? {};
     setBaseUrl(cfgString(cfg, 'base_url'));
@@ -93,7 +91,6 @@ export default function JiraSettings(props: JiraSettingsProps) {
     setDoneStatuses(mapping.done.join(', '));
   });
 
-  /** Fetch the user's visible projects from Jira and populate the dropdown. */
   async function loadProjects() {
     setProjectsLoading(true);
     setError(null);
@@ -141,7 +138,6 @@ export default function JiraSettings(props: JiraSettingsProps) {
     }, 300);
   }
 
-  // Re-fetch the preview whenever any builder field changes (debounced).
   createEffect(() => {
     jqlParts();
     statusesText();

@@ -1,12 +1,14 @@
 /// <reference lib="dom" />
 import { test, expect } from './fixtures.ts';
 import type { InvokeHandlers } from './fixtures.ts';
+import { readInvokeCalls } from './fixtures.ts';
 
 function handlers(extra: InvokeHandlers = {}): InvokeHandlers {
   return {
-    list_cards: () => [
-      { id: 'card-a', title: 'Card A', column: 'backlog', position: 1, priority: 'medium', source: 'local', sourceRef: null, sourceStatus: null, treeSourceId: 'ts-1', description: '', updatedAt: '2024-01-01T00:00:00Z' },
-    ],
+    list_cards_by_column: (args) =>
+      (args as { column: string }).column === 'backlog'
+        ? [{ id: 'card-a', title: 'Card A', column: 'backlog', position: 1, priority: 'medium', source: 'local', sourceRef: null, sourceStatus: null, treeSourceId: 'ts-1', description: '', updatedAt: '2024-01-01T00:00:00Z' }]
+        : [],
     list_tree_sources: () => [{ id: 'ts-1', label: 'Notes', path: '/tmp/notes', editorCommand: 'code {path}' }],
     open_in_editor: () => null,
     create_local_card: () => null,
@@ -82,7 +84,7 @@ test.describe('Card context menu', () => {
 
     await menu.locator('[data-testid="menu-item-editor"]').click();
 
-    const calls = await page.evaluate(() => (window as any).__kansoloMock.calls as Array<[string, unknown]>);
+    const calls = await readInvokeCalls(page);
     const editorCall = calls.find(([cmd]) => cmd === 'open_in_editor');
     expect(editorCall).toBeTruthy();
   });

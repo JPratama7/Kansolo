@@ -1,6 +1,6 @@
 [package]
 name = "kansolo"
-version = "0.1.0"
+version = "1.0.0"
 description = "Kansolo — solo kanban with Jira sync"
 authors = ["you"]
 edition = "2021"

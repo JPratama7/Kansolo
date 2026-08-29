@@ -34,7 +34,7 @@ export function ArkSelect(props: ArkSelectProps): JSX.Element {
       <Select.Trigger class={props.class}>
         <Select.ValueText placeholder={props.placeholder} />
         <Select.Indicator>
-          <span class="i-carat-down">▾</span>
+          <span class="i-carat-down" aria-hidden="true">▾</span>
         </Select.Indicator>
       </Select.Trigger>
       <Select.Positioner>

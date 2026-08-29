@@ -42,7 +42,6 @@ const SECTIONS = [
 type SectionId = (typeof SECTIONS)[number]['id'];
 
 export default function Settings(props: SettingsProps) {
-  // --- Source instances (data-driven via listSourceTypes/listSources) ---
   const [sourceTypes, setSourceTypes] = createSignal<SourceTypeMeta[]>([]);
   const [sources, setSources] = createSignal<SourceInstance[]>([]);
   const [editing, setEditing] = createSignal<SourceInstance | null>(null);
@@ -57,7 +56,6 @@ export default function Settings(props: SettingsProps) {
   const [addType, setAddType] = createSignal<string>('');
   const [addLabel, setAddLabel] = createSignal('');
 
-  // --- App-level (flat) settings: MCP, tray, editor, tree sources ---
   const [mcpEnabled, setMcpEnabled] = createSignal(false);
   const [mcpPort, setMcpPort] = createSignal(27816);
   const [mcpRunning, setMcpRunning] = createSignal(false);
@@ -76,7 +74,6 @@ export default function Settings(props: SettingsProps) {
   // At most one persistent delete-confirmation toast at a time (decision 2B).
   const [pendingConfirmToastId, setPendingConfirmToastId] = createSignal<string | null>(null);
 
-  // --- Dialog shell: active section, persisted size ---
   const [activeSection, setActiveSection] = createSignal<SectionId>('sources');
   const [panelW, setPanelW] = createSignal(0);
   const [panelH, setPanelH] = createSignal(0);
@@ -122,12 +119,10 @@ export default function Settings(props: SettingsProps) {
     })();
   });
 
-  /** Close: notify parent via onOpenChange. */
   function requestClose() {
     props.onOpenChange(false);
   }
 
-  // --- Resize handle: drag to adjust size; persisted on pointerup. ---
   function onResizeStart(e: PointerEvent) {
     e.preventDefault();
     e.stopPropagation();
@@ -164,7 +159,6 @@ export default function Settings(props: SettingsProps) {
     }
   }
 
-  /** Open the per-source editor: load the registry component for its type. */
   function startEdit(src: SourceInstance) {
     setError(null);
     setEditing(src);
@@ -182,7 +176,6 @@ export default function Settings(props: SettingsProps) {
     }) => any);
   }
 
-  /** Persist the edited source's config + status mapping + label + enabled. */
   async function handleSaveEdit(config: Record<string, unknown>, statusMapping: StatusMapping) {
     const src = editing();
     if (!src) return;
@@ -344,7 +337,6 @@ export default function Settings(props: SettingsProps) {
               height: panelH() ? `${panelH()}px` : undefined,
             }}
           >
-        {/* Header */}
         <div class="flex items-center justify-between px-4 py-3 bg-surface border-b border-border-subtle">
           <h2 class="text-base font-bold text-ink">Settings</h2>
           <button
@@ -363,7 +355,6 @@ export default function Settings(props: SettingsProps) {
           </div>
         )}
 
-        {/* Two-pane body: rail + scrollable content */}
         <div class="flex flex-1 min-h-0">
           <nav class="w-36 shrink-0 border-r border-border-subtle bg-base/40 py-2 flex flex-col gap-0.5">
             <For each={SECTIONS}>
@@ -441,14 +432,18 @@ export default function Settings(props: SettingsProps) {
                                 name="source_type"
                                 class={INPUT}
                               />
+                              <label class="block text-xs font-semibold text-ink-secondary" for="settings-add-source-label">
+                                Label
+                              </label>
                               <input
+                                id="settings-add-source-label"
                                 type="text"
                                 class={INPUT}
                                 name="source_label"
                                 autocomplete="off"
                                 value={addLabel()}
                                 onInput={(e) => setAddLabel(e.currentTarget.value)}
-                                placeholder="Label (e.g. Work Jira)…"
+                                placeholder="e.g. Work Jira…"
                               />
                               <div class="flex gap-2 justify-end">
                                 <button
@@ -769,7 +764,6 @@ export default function Settings(props: SettingsProps) {
           </div>
         </div>
 
-        {/* Footer */}
         <div class="flex gap-2 justify-end px-4 py-3 bg-surface border-t border-border-subtle">
           <button
             type="button"
@@ -787,7 +781,6 @@ export default function Settings(props: SettingsProps) {
           </button>
         </div>
 
-        {/* Resize grip */}
         <div
           class="settings-grip"
           onPointerDown={onResizeStart}

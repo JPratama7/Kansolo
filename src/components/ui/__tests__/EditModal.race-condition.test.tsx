@@ -45,7 +45,13 @@ test('EditModal race: switching cards while dirty prompts discard, no corruption
   };
   (globalThis.window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = internals;
   const invokeStub = vi.spyOn(internals, 'invoke').mockImplementation((...args: unknown[]) =>
-    Promise.resolve(args[0] === 'list_cards' ? [cardA, cardB] : args[0] === 'list_tree_sources' ? [] : undefined));
+    Promise.resolve(
+      args[0] === 'list_cards_by_column' && (args[1] as { column?: string })?.column === 'backlog'
+        ? [cardA, cardB]
+        : args[0] === 'list_tree_sources'
+          ? []
+          : undefined,
+    ));
 
   const { getByText, baseElement } = render(() => (
     <>

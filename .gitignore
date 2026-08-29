@@ -7,4 +7,5 @@ src-tauri/foo.txt
 .devin/
 .vscode/
 .plan/
+test-results/
 TODO.md
