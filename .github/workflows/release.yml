@@ -11,11 +11,12 @@ jobs:
   release:
     name: Merge to releases + tag
     runs-on: ubuntu-latest
+    environment: Production
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
+          token: ${{ secrets.GH_TOKEN }}
 
       - uses: denoland/setup-deno@v2
         with:
@@ -67,3 +68,10 @@ jobs:
           git tag "v$v"
           git push origin releases
           git push origin "v$v"
+
+      - name: Merge releases back to main
+        if: steps.bump.outputs.kind != 'none'
+        run: |
+          git checkout main
+          git merge --no-ff releases -m "chore(release): merge releases back to main for v${{ steps.bump.outputs.next }}"
+          git push origin main
