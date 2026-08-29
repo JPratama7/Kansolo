@@ -17,11 +17,14 @@ const CARD = {
   updatedAt: '2024-01-01T00:00:00Z',
 };
 
-/** Mock Tauri invoke: list_cards → [CARD], everything else → []. */
+/** Mock Tauri invoke: list_cards_by_column → [CARD] for backlog, everything
+ * else → []. The Board fetches per-column, so the mock must answer the
+ * per-column command (not the old whole-board list_cards). */
 function mockInvoke(): void {
   // @ts-expect-error happy-dom window lacks Tauri internals typings
   globalThis.window.__TAURI_INTERNALS__ = {
-    invoke: async (cmd: string) => (cmd === 'list_cards' ? [CARD] : []),
+    invoke: async (cmd: string, args?: { column?: string }) =>
+      cmd === 'list_cards_by_column' && args?.column === CARD.column ? [CARD] : [],
     transformCallback: () => 0,
   };
 }

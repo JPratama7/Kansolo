@@ -6,11 +6,22 @@ function cardStore(initial: Array<{ id: string; title: string; column: 'backlog'
   const cards = initial.map((c) => ({ ...c, updatedAt: '2024-01-01T00:00:00Z' }));
   return {
     handlers: (): InvokeHandlers => ({
-      list_cards: () => cards.map((c) => ({ ...c, source: 'local', sourceRef: null, sourceStatus: null, treeSourceId: null, description: '' })),
+      list_cards_by_column: (args: Record<string, unknown>) => {
+        const col = (args as { column: string }).column;
+        return cards
+          .filter((c) => c.column === col)
+          .map((c) => ({ ...c, source: 'local', sourceRef: null, sourceStatus: null, treeSourceId: null, description: '' }));
+      },
       move_card: (args: Record<string, unknown>) => {
-        const a = args as { id: string; column: 'backlog' | 'ongoing' | 'done'; position: number };
+        const a = args as { id: string; column: 'backlog' | 'ongoing' | 'done'; position: number | null };
         const c = cards.find((x) => x.id === a.id);
-        if (c) { c.column = a.column; c.position = a.position; c.updatedAt = new Date().toISOString(); }
+        if (c) {
+          c.column = a.column;
+          // position is null when appending (drag-drop) — land at end of column.
+          const max = Math.max(0, ...cards.filter((x) => x.column === a.column).map((x) => x.position));
+          c.position = a.position ?? max + 1;
+          c.updatedAt = new Date().toISOString();
+        }
         return null;
       },
       list_tree_sources: () => [],
