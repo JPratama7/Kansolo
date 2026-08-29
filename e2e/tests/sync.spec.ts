@@ -4,7 +4,10 @@ import type { InvokeHandlers } from './fixtures.ts';
 /** Sync flow with no conflicts: returns one imported card. */
 function syncOkHandlers(): InvokeHandlers {
   return {
-    list_cards: () => [{ id: 'c1', title: 'Synced card', column: 'backlog', position: 1, priority: 'medium', source: 'jira', sourceRef: 'JIRA-1', sourceStatus: 'To Do', treeSourceId: null, description: '', updatedAt: '2024-01-01T00:00:00Z' }],
+    list_cards_by_column: (args) =>
+      (args as { column: string }).column === 'backlog'
+        ? [{ id: 'c1', title: 'Synced card', column: 'backlog', position: 1, priority: 'medium', source: 'jira', sourceRef: 'JIRA-1', sourceStatus: 'To Do', treeSourceId: null, description: '', updatedAt: '2024-01-01T00:00:00Z' }]
+        : [],
     list_tree_sources: () => [],
     list_sources: () => [{ id: 'src-1', sourceType: 'jira', label: 'My Jira', enabled: true, configJson: '{}' }],
     sync_source: () => ({ importedCount: 3, conflicts: [], unmappedStatuses: [], syncedAt: '2024-06-01T12:00:00Z' }),
@@ -21,7 +24,10 @@ function syncOkHandlers(): InvokeHandlers {
 /** Sync flow that surfaces one conflict. */
 function syncConflictHandlers(): InvokeHandlers {
   return {
-    list_cards: () => [{ id: 'c1', title: 'Local title', column: 'backlog', position: 1, priority: 'medium', source: 'jira', sourceRef: 'JIRA-1', sourceStatus: 'To Do', treeSourceId: null, description: '', updatedAt: '2024-01-01T00:00:00Z' }],
+    list_cards_by_column: (args) =>
+      (args as { column: string }).column === 'backlog'
+        ? [{ id: 'c1', title: 'Local title', column: 'backlog', position: 1, priority: 'medium', source: 'jira', sourceRef: 'JIRA-1', sourceStatus: 'To Do', treeSourceId: null, description: '', updatedAt: '2024-01-01T00:00:00Z' }]
+        : [],
     list_tree_sources: () => [],
     list_sources: () => [{ id: 'src-1', sourceType: 'jira', label: 'My Jira', enabled: true, configJson: '{}' }],
     sync_source: () => ({
