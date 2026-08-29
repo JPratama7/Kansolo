@@ -25,9 +25,9 @@ jobs:
             node_modules
           key: deno-${{ runner.os }}-${{ hashFiles('deno.lock') }}
       - name: Build
-        run: deno task build
+        run: make build-ts
       - name: Test
-        run: deno test --allow-read --allow-env
+        run: make test-ts
 
   rust:
     name: Rust check + test
@@ -55,8 +55,6 @@ jobs:
         with:
           workspaces: src-tauri
       - name: cargo check
-        working-directory: src-tauri
-        run: cargo check --all-targets
+        run: make check
       - name: cargo test
-        working-directory: src-tauri
-        run: cargo test
+        run: make test-rust

@@ -56,9 +56,7 @@ jobs:
         if: steps.bump.outputs.kind != 'none'
         run: |
           v="${{ steps.bump.outputs.next }}"
-          sed -i "s/^version = \".*\"/version = \"$v\"/" src-tauri/Cargo.toml
-          sed -i "s/\"version\": \".*\"/\"version\": \"$v\"/" package.json
-          sed -i "s/\"version\": \".*\"/\"version\": \"$v\"/" src-tauri/tauri.conf.json
+          make bump-version VERSION="$v"
           git add src-tauri/Cargo.toml package.json src-tauri/tauri.conf.json
           git commit -m "chore(release): v$v" || echo "nothing to commit"
 
