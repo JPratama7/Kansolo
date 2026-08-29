@@ -13,6 +13,12 @@ export async function listCards(): Promise<KanbanCard[]> {
   return invoke<KanbanCard[]>('list_cards');
 }
 
+/** Cards for a single column, ordered by position. Used by the per-column
+ * lazy fetch so each column loads (and shows its loading state) on its own. */
+export async function listCardsByColumn(column: ColumnId): Promise<KanbanCard[]> {
+  return invoke<KanbanCard[]>('list_cards_by_column', { column });
+}
+
 export async function createLocalCard(title: string, column: ColumnId): Promise<KanbanCard> {
   return invoke<KanbanCard>('create_local_card', { title, column });
 }
@@ -26,8 +32,10 @@ export async function updateCard(
   await invoke('update_card', { id, ...patch });
 }
 
-export async function moveCard(id: string, column: ColumnId, position: number) {
-  await invoke('move_card', { id, column, position });
+/** Move a card to a column. Omit `position` to append at the end of the
+ * target column (the Rust side computes max position + 1). */
+export async function moveCard(id: string, column: ColumnId, position?: number) {
+  await invoke('move_card', { id, column, position: position ?? null });
 }
 
 export async function deleteCard(id: string) {

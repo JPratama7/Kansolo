@@ -10,7 +10,7 @@ import { COLUMNS } from '../columns.ts';
 import {
   createLocalCard,
   deleteCard as deleteCardDb,
-  listCards,
+  listCardsByColumn,
   listTreeSources,
   moveCard as moveCardDb,
   updateCard,
@@ -18,11 +18,13 @@ import {
 import Column from './Column.tsx';
 import EditModal, { type EditModalResult } from './EditModal.tsx';
 
-let loadCards: (() => Promise<void>) | null = null;
+let reloadBoard: (() => void) | null = null;
 
-/** Re-seed the board from the database. Used by App, e.g. after a sync. */
+/** Re-seed the board from the database. Used by App, e.g. after a sync.
+ * Triggers each column to re-fetch with a visible loading state. */
 export function reload(): Promise<void> {
-  return loadCards ? loadCards() : Promise.resolve();
+  reloadBoard?.();
+  return Promise.resolve();
 }
 
 interface DragEndEvent {
@@ -85,6 +87,13 @@ function CardDragOverlay(props: { treeSources: () => TreeSource[] }) {
 export default function Board() {
   const [cards, setCards] = createSignal<KanbanCard[]>([]);
   const [treeSources, setTreeSources] = createSignal<TreeSource[]>([]);
+  // Per-column loading state. True while a column's first fetch (or a sync
+  // reload) is in flight — drives skeleton placeholders in Column.
+  const [columnLoading, setColumnLoading] = createSignal<Record<ColumnId, boolean>>({
+    backlog: true,
+    ongoing: true,
+    done: true,
+  });
   // Singleton EditModal state: the card currently being edited, or null when
   // the modal is closed. Lifted out of Card so only one Dialog.Root exists.
   const [currentlyEditingCard, setCurrentlyEditingCard] = createSignal<KanbanCard | null>(null);
@@ -167,22 +176,39 @@ export default function Board() {
     menu.api().reposition({ getAnchorRect: () => ({ width: 0, height: 0, ...point }) });
   });
 
-  loadCards = async () => {
-    setCards(await listCards());
-    const sources = await listTreeSources();
-    setTreeSources(sources);
+  /** Fetch one column's cards from the database and splice them into the
+   * central cards signal. When `withSkeletons` is true, sets the column's
+   * loading flag so Column shows placeholders during the fetch. Used for
+   * initial load, sync reloads (skeletons), and error reverts (no skeletons). */
+  async function fetchColumn(column: ColumnId, withSkeletons: boolean) {
+    if (withSkeletons) setColumnLoading((prev) => ({ ...prev, [column]: true }));
+    try {
+      const fresh = await listCardsByColumn(column);
+      setCards((prev) => [...prev.filter((c) => c.column !== column), ...fresh]);
+    } finally {
+      setColumnLoading((prev) => ({ ...prev, [column]: false }));
+    }
+  }
+
+  // Sync reload: re-fetch every column with skeletons visible.
+  reloadBoard = () => {
+    for (const col of COLUMNS) void fetchColumn(col.id, true);
   };
   onMount(() => {
-    void loadCards?.();
+    void listTreeSources().then(setTreeSources);
+    for (const col of COLUMNS) void fetchColumn(col.id, true);
   });
 
   async function addCard(title: string, column: ColumnId) {
+    // Backend returns the real card (UUID, position, timestamps) — append it
+    // directly. No optimistic guess needed; the call is fast and gives us truth.
     const card = await createLocalCard(title, column);
     setCards((prev) => [...prev, card]);
   }
 
   async function editCard(id: string, title: string, description: string, priority: Priority, treeSourceId: string) {
-    await updateCard(id, { title, description, priority, treeSourceId });
+    // Optimistic: update the signal immediately so the card reflects the edit
+    // without waiting on the backend round-trip.
     setCards((prev) =>
       prev.map((c) =>
         c.id === id
@@ -190,6 +216,14 @@ export default function Board() {
           : c,
       ),
     );
+    try {
+      await updateCard(id, { title, description, priority, treeSourceId });
+    } catch (e) {
+      // Revert: re-fetch the card's column to restore true state.
+      const card = cards().find((c) => c.id === id);
+      if (card) void fetchColumn(card.column, false);
+      toaster.error({ title: 'Edit failed', description: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   function handleEditSave(result: EditModalResult) {
@@ -199,30 +233,42 @@ export default function Board() {
   }
 
   async function deleteCard(id: string) {
-    await deleteCardDb(id);
+    const card = cards().find((c) => c.id === id);
+    // Optimistic: remove immediately.
     setCards((prev) => prev.filter((c) => c.id !== id));
+    try {
+      await deleteCardDb(id);
+    } catch (e) {
+      // Revert: re-fetch the card's column to restore it.
+      if (card) void fetchColumn(card.column, false);
+      toaster.error({ title: 'Delete failed', description: e instanceof Error ? e.message : String(e) });
+    }
   }
 
-  async function moveCardTo(id: string, column: ColumnId, position: number) {
-    await moveCardDb(id, column, position);
+  async function moveCardTo(id: string, column: ColumnId) {
+    const card = cards().find((c) => c.id === id);
+    if (!card || card.column === column) return;
+    const oldColumn = card.column;
+    // Optimistic: flip the card to the target column immediately so the drag
+    // feels instant. Position will be corrected by the backend (appends to end).
     setCards((prev) =>
-      prev.map((c) =>
-        c.id === id ? { ...c, column, position, updatedAt: new Date().toISOString() } : c,
-      ),
+      prev.map((c) => (c.id === id ? { ...c, column, updatedAt: new Date().toISOString() } : c)),
     );
-  }
-
-  /** MVP: a dropped card lands at the end of the target column. */
-  function endPosition(column: ColumnId): number {
-    const inColumn = cards().filter((c) => c.column === column);
-    return inColumn.length === 0 ? 1 : Math.max(...inColumn.map((c) => c.position)) + 1;
+    try {
+      await moveCardDb(id, column);
+    } catch (e) {
+      // Revert: re-fetch both affected columns.
+      void fetchColumn(oldColumn, false);
+      void fetchColumn(column, false);
+      toaster.error({ title: 'Move failed', description: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   function handleDragEnd(event: DragEndEvent) {
     const card = event.draggable?.data;
     const column = event.droppable?.data;
     if (!card || !column || card.column === column) return;
-    void moveCardTo(card.id, column, endPosition(column));
+    void moveCardTo(card.id, column);
   }
 
   async function openInEditor() {
@@ -242,7 +288,7 @@ export default function Board() {
   function moveMenuCardTo(column: ColumnId) {
     const card = currentlyMenuingCard();
     if (!card || card.column === column) return;
-    void moveCardTo(card.id, column, endPosition(column));
+    void moveCardTo(card.id, column);
     setCurrentlyMenuingCard(null);
   }
 
@@ -262,6 +308,7 @@ export default function Board() {
               <Column
                 column={column}
                 cards={cards}
+                loading={() => columnLoading()[column.id]}
                 treeSources={treeSources}
                 onAdd={(title) => void addCard(title, column.id)}
                 onOpenEdit={requestEditCard}

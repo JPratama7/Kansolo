@@ -14,6 +14,8 @@ declare module 'solid-js' {
 interface ColumnProps {
   column: { id: ColumnId; title: string };
   cards: () => KanbanCard[];
+  /** True while this column's cards are being fetched — shows skeletons. */
+  loading: () => boolean;
   treeSources: () => TreeSource[];
   onAdd: (title: string) => void;
   onOpenEdit: (card: KanbanCard) => void;
@@ -28,6 +30,10 @@ const COL_ACCENT: Record<ColumnId, string> = {
   ongoing: 'bg-col-ongoing',
   done: 'bg-col-done',
 };
+
+/** Number of skeleton placeholders shown while a column is loading. Enough
+ * to signal "cards are coming" without filling the column with noise. */
+const SKELETON_COUNT = 3;
 
 export default function Column(props: ColumnProps) {
   const droppable = createDroppable({
@@ -73,19 +79,26 @@ export default function Column(props: ColumnProps) {
       <header class="flex items-center justify-between px-3 pt-2 pb-1">
         <h2 class="text-sm font-bold text-ink">{props.column.title}</h2>
         <span class="text-xs font-semibold text-ink-secondary bg-elevated rounded px-1.5 py-0.5 tabular-nums">
-          {sortedCards().length}
+          {props.loading() ? '…' : sortedCards().length}
         </span>
       </header>
 
       <div class="card-grid px-2 py-1 board-scroll overflow-y-auto">
         <Show
-          when={sortedCards().length > 0}
+          when={props.loading()}
           fallback={
-            <p class="text-ink-muted text-xs py-3 text-center">Drag cards here</p>
+            <Show
+              when={sortedCards().length > 0}
+              fallback={<p class="text-ink-muted text-xs py-3 text-center">Drag cards here</p>}
+            >
+              <For each={sortedCards()}>
+                {(card) => <Card card={card} treeSources={props.treeSources} onOpenEdit={props.onOpenEdit} onDelete={props.onDelete} onContextMenuOpen={props.onContextMenuOpen} />}
+              </For>
+            </Show>
           }
         >
-          <For each={sortedCards()}>
-            {(card) => <Card card={card} treeSources={props.treeSources} onOpenEdit={props.onOpenEdit} onDelete={props.onDelete} onContextMenuOpen={props.onContextMenuOpen} />}
+          <For each={Array.from({ length: SKELETON_COUNT })}>
+            {() => <CardSkeleton />}
           </For>
         </Show>
       </div>
@@ -139,5 +152,25 @@ export default function Column(props: ColumnProps) {
         </Show>
       </div>
     </section>
+  );
+}
+
+/** Placeholder card shown while a column's cards are loading. Mirrors the
+ * real card silhouette (priority strip + title + description + footer) so
+ * the layout doesn't shift when real cards arrive. The shimmer is a single
+ * quiet ambient cue; reduced-motion users see a static block. */
+function CardSkeleton() {
+  return (
+    <div class="card-skeleton rounded-[var(--radius-card)] border border-border-subtle" aria-hidden="true">
+      <div class="card-skeleton-strip" />
+      <div class="px-3 py-2">
+        <div class="card-skeleton-line" style={{ width: '85%' }} />
+        <div class="card-skeleton-line card-skeleton-line--sm mt-1.5" style={{ width: '60%' }} />
+        <div class="flex items-center gap-1.5 mt-2.5">
+          <div class="card-skeleton-line card-skeleton-line--xs" style={{ width: '3rem' }} />
+          <div class="card-skeleton-line card-skeleton-line--xs" style={{ width: '4.5rem' }} />
+        </div>
+      </div>
+    </div>
   );
 }
