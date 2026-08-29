@@ -209,6 +209,37 @@ select option:hover {
   opacity: 0.85;
 }
 
+/* --- Card loading skeletons: quiet ambient shimmer on the slate palette --- */
+/* One cue, not a light show: a slow left-to-right highlight sweep across
+   elevated blocks on the surface. Matches the real card silhouette so the
+   layout doesn't shift when cards arrive. */
+@keyframes skeleton-shimmer {
+  from { background-position: -200% 0; }
+  to   { background-position: 200% 0; }
+}
+.card-skeleton {
+  background: var(--color-surface);
+}
+.card-skeleton-strip {
+  height: 4px;
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+  background: var(--color-elevated);
+}
+.card-skeleton-line {
+  height: 0.7rem;
+  border-radius: 4px;
+  background: linear-gradient(
+    90deg,
+    var(--color-elevated) 0%,
+    var(--color-hover) 50%,
+    var(--color-elevated) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+.card-skeleton-line--sm { height: 0.55rem; }
+.card-skeleton-line--xs { height: 0.5rem; }
+
 .add-link {
   color: var(--color-ink-secondary);
 }
@@ -231,6 +262,10 @@ select option:hover {
 @media (prefers-reduced-motion: reduce) {
   .trello-card {
     transition: none;
+  }
+  .card-skeleton-line {
+    animation: none;
+    background: var(--color-elevated);
   }
 }
 

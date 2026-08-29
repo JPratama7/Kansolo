@@ -45,6 +45,28 @@ pub async fn list_cards(app: AppHandle) -> Result<Vec<Card>, String> {
     Ok(cards)
 }
 
+/// SELECT cards for a single column, ordered by position. Used by the
+/// per-column lazy fetch so each column loads (and shows its loading state)
+/// independently rather than waiting on one whole-board query.
+#[tauri::command]
+pub async fn list_cards_by_column(app: AppHandle, column: String) -> Result<Vec<Card>, String> {
+    let conn = open_db(&app)?;
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {CARD_COLUMNS} FROM cards WHERE \"column\" = ?1 ORDER BY position ASC"
+        ))
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![column], row_to_card_row)
+        .map_err(|e| e.to_string())?;
+    let mut cards = Vec::new();
+    for r in rows {
+        let row = r.map_err(|e| e.to_string())?;
+        cards.push(Card::from(row));
+    }
+    Ok(cards)
+}
+
 /// Create a new local card with a fresh UUID and a position at the end of its column.
 #[tauri::command]
 pub async fn create_local_card(app: AppHandle, title: String, column: String) -> Result<Card, String> {
@@ -148,13 +170,24 @@ pub async fn update_card(
     Ok(())
 }
 
-/// Move a card to a new column/position. Always bumps updated_at.
+/// Move a card to a new column/position. Always bumps updated_at. When
+/// `position` is `None`, the card lands at the end of the target column
+/// (max existing position + 1) — used by drag-drop, which always appends.
 #[tauri::command]
-pub async fn move_card(app: AppHandle, id: String, column: String, position: i64) -> Result<(), String> {
+pub async fn move_card(
+    app: AppHandle,
+    id: String,
+    column: String,
+    position: Option<i64>,
+) -> Result<(), String> {
     let conn = open_db(&app)?;
+    let final_pos = match position {
+        Some(p) => p,
+        None => max_position(&conn, &column)? + 1,
+    };
     conn.execute(
         r#"UPDATE cards SET "column" = ?1, position = ?2, updated_at = ?3 WHERE id = ?4"#,
-        rusqlite::params![column, position, now_iso(), id],
+        rusqlite::params![column, final_pos, now_iso(), id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())

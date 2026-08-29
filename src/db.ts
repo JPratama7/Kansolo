@@ -13,6 +13,12 @@ export async function listCards(): Promise<KanbanCard[]> {
   return invoke<KanbanCard[]>('list_cards');
 }
 
+/** Cards for a single column, ordered by position. Used by the per-column
+ * lazy fetch so each column loads (and shows its loading state) on its own. */
+export async function listCardsByColumn(column: ColumnId): Promise<KanbanCard[]> {
+  return invoke<KanbanCard[]>('list_cards_by_column', { column });
+}
+
 export async function createLocalCard(title: string, column: ColumnId): Promise<KanbanCard> {
   return invoke<KanbanCard>('create_local_card', { title, column });
 }
@@ -26,8 +32,10 @@ export async function updateCard(
   await invoke('update_card', { id, ...patch });
 }
 
-export async function moveCard(id: string, column: ColumnId, position: number) {
-  await invoke('move_card', { id, column, position });
+/** Move a card to a column. Omit `position` to append at the end of the
+ * target column (the Rust side computes max position + 1). */
+export async function moveCard(id: string, column: ColumnId, position?: number) {
+  await invoke('move_card', { id, column, position: position ?? null });
 }
 
 export async function deleteCard(id: string) {
@@ -39,12 +47,10 @@ export async function deleteAllSourceCards(source: string): Promise<void> {
   await invoke('delete_all_source_cards', { source });
 }
 
-/** List all registered source instances. */
 export async function listSources(): Promise<SourceInstance[]> {
   return invoke<SourceInstance[]>('list_sources');
 }
 
-/** Register a new source instance. */
 export async function addSource(
   sourceType: string,
   label: string,
@@ -61,7 +67,6 @@ export async function addSource(
   });
 }
 
-/** Update an existing source instance. */
 export async function updateSource(
   id: string,
   label: string,
@@ -77,7 +82,6 @@ export async function deleteSource(id: string): Promise<void> {
   await invoke('delete_source', { id });
 }
 
-/** List the pluggable source types the backend knows about. */
 export async function listSourceTypes(): Promise<SourceTypeMeta[]> {
   return invoke<SourceTypeMeta[]>('list_source_types');
 }
@@ -87,7 +91,6 @@ export async function syncSource(sourceId: string): Promise<SyncResult> {
   return invoke<SyncResult>('sync_source', { sourceId });
 }
 
-/** Apply per-card field choices to resolve a batch of sync conflicts. */
 export async function resolveConflicts(
   sourceId: string,
   resolutions: ConflictResolution[],
