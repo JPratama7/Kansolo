@@ -56,8 +56,7 @@ jobs:
           workspaces: src-tauri
 
       - name: Build (binary + bundles)
-        working-directory: src-tauri
-        run: cargo tauri build
+        run: make bundle
 
       - name: Package no-bundle binary
         shell: bash

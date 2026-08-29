@@ -68,6 +68,7 @@ export interface SyncResult {
   conflicts: SyncConflict[];
   unmappedStatuses: string[];
   syncedAt: string;
+  importedCount: number;
 }
 
 /** Per-card field choices for resolving a batch of sync conflicts. */

@@ -50,6 +50,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             db::cards::list_cards,
+            db::cards::list_cards_by_column,
             db::cards::create_local_card,
             db::cards::update_card,
             db::cards::move_card,
