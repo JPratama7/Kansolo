@@ -9,7 +9,7 @@ Solo kanban desktop app with plugin-based external source sync. Built with Tauri
 - **Deno + TypeScript** — frontend toolchain
 - **SolidJS** — UI framework
 - **Vite 8** — bundler
-- **Tailwind CSS 4 + daisyUI 5** — styling
+- **Tailwind + ArkUI** — styling
 - **SQLite** via `rusqlite` (bundled)
 - **rmcp** — MCP server (streamable-http transport)
 
