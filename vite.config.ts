@@ -73,31 +73,6 @@ export default defineConfig(async ({ mode }) => ({
         // Mangle internal export names (non-exported identifiers) for
         // shorter generated code. Safe in a single-chunk bundle.
         minifyInternalExports: true,
-        // Oxc minifier: full compress + mangle. No `passes` (oxc doesn't
-        // support multi-pass like terser). `dropConsole` is the main win
-        // since ark-ui/zag call console.warn for dev-mode API misuse.
-        minify: {
-          compress: {
-            dropConsole: true,
-            dropDebugger: true,
-            // Drop unused functions/vars that survived tree-shaking.
-            unused: true,
-            // Don't preserve function/class names → more mangling room.
-            keepNames: { function: false, class: false },
-            // Inline treeshake inside compress for a second DCE pass.
-            treeshake: {
-              propertyReadSideEffects: false,
-              propertyWriteSideEffects: false,
-              unknownGlobalSideEffects: false,
-              manualPureFunctions: [
-                "console.log", "console.warn", "console.error",
-                "console.debug", "console.info", "console.trace",
-              ],
-            },
-          },
-          mangle: { toplevel: true, keepNames: { function: false, class: false } },
-          codegen: { removeWhitespace: true, legalComments: "none" },
-        },
       },
     } : undefined,
   },
