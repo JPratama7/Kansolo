@@ -2,10 +2,14 @@
 mod editor;
 mod mcp;
 mod tray;
-mod db;
+pub mod db;
 mod source;
 mod mapping;
 mod sync;
+pub mod runner;
+pub mod skills;
+mod worktree;
+pub mod error;
 
 use tauri::{Manager, WindowEvent};
 
@@ -55,6 +59,7 @@ pub fn run() {
             db::cards::update_card,
             db::cards::move_card,
             db::cards::delete_card,
+            db::cards::is_card_locked_cmd,
             db::cards::delete_all_source_cards,
             db::cards::get_card_by_source_ref,
             db::cards::upsert_card_from_sync,
@@ -81,7 +86,25 @@ pub fn run() {
             source::resolve_conflicts,
             source::preview_jql,
             mcp::mcp_apply,
-            mcp::mcp_status
+            mcp::mcp_status,
+            runner::acp_list_agents,
+            runner::acp_register_agent,
+            runner::acp_update_agent,
+            runner::acp_delete_agent,
+            runner::acp_list_skills,
+            runner::acp_list_active_runs,
+            runner::acp_create_run,
+            runner::acp_get_run,
+            runner::acp_get_run_for_card,
+            runner::acp_list_updates,
+            runner::acp_has_updates,
+            runner::acp_list_runs,
+            runner::acp_cleanup,
+            runner::acp_cancel_run,
+            runner::acp_respond_permission,
+            runner::acp_diff_main,
+            runner::acp_merge,
+            runner::acp_remove_worktree
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

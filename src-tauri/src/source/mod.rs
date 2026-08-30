@@ -147,6 +147,7 @@ fn map_raw_card(raw: &RawCard, source_type: &str, mapping: &StatusMapping) -> (C
         source_ref: Some(raw.source_ref.clone()),
         source_status: Some(raw.status_name.clone()),
         tree_source_id: None,
+        repo_path: None,
         created_at: now.clone(),
         updated_at: now,
     };

@@ -344,6 +344,7 @@ mod tests {
             source_ref: Some("PROJ-1".to_string()),
             source_status: Some("To Do".to_string()),
             tree_source_id: None,
+            repo_path: None,
             created_at: NOW.to_string(),
             updated_at: NOW.to_string(),
         };

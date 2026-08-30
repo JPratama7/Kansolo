@@ -210,6 +210,21 @@ pub async fn update_tree_source(
     Ok(())
 }
 
+/// Resolve a tree source's path by id. Sync helper used by the ACP runner
+/// to find a card's repo when no explicit `repo_path` is set.
+pub fn get_tree_source_path(conn: &Connection, id: &str) -> Result<Option<String>, crate::error::AcpError> {
+    conn.query_row(
+        "SELECT path FROM tree_sources WHERE id = ?1",
+        params![id],
+        |r| r.get::<_, String>(0),
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(crate::error::AcpError::internal(other.to_string())),
+    })
+}
+
 /// Count cards still linked to a tree source. Returns an error message
 /// if any cards reference it, or `Ok(())` if deletion is safe.
 pub(crate) fn ensure_tree_source_deletable(conn: &Connection, id: &str) -> Result<(), String> {

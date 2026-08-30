@@ -17,13 +17,14 @@ fn row_to_card_row(row: &rusqlite::Row) -> rusqlite::Result<CardRow> {
         source_ref: row.get("source_ref")?,
         source_status: row.get("source_status")?,
         tree_source_id: row.get("tree_source_id")?,
+        repo_path: row.get("repo_path")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
 }
 
 /// Canonical column list for SELECTs — uses the generalized columns.
-const CARD_COLUMNS: &str = r#"id, title, description, priority, "column", source, position, source_ref, source_status, tree_source_id, created_at, updated_at"#;
+const CARD_COLUMNS: &str = r#"id, title, description, priority, "column", source, position, source_ref, source_status, tree_source_id, repo_path, created_at, updated_at"#;
 
 /// SELECT all cards ordered by column then position.
 #[tauri::command]
@@ -102,6 +103,7 @@ pub async fn create_local_card(app: AppHandle, title: String, column: String) ->
         source_ref: None,
         source_status: None,
         tree_source_id: None,
+        repo_path: None,
         created_at: now.clone(),
         updated_at: now,
     })
@@ -202,6 +204,13 @@ pub async fn delete_card(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Check whether a card has an active (pending/running) agent run.
+#[tauri::command]
+pub async fn is_card_locked_cmd(app: AppHandle, id: String) -> Result<bool, String> {
+    let conn = open_db(&app)?;
+    Ok(crate::db::agent_runs::is_card_locked(&conn, &id))
+}
+
 /// Atomically remove every card sourced from `source` and its sync snapshots.
 /// Wraps both deletes in a single transaction so a crash between them can't
 /// leave orphaned snapshots referencing deleted cards (fixes the TS non-atomicity bug).
@@ -238,6 +247,23 @@ pub async fn get_card_by_source_ref(
         .map_err(|e| e.to_string())?;
     if let Some(row) = rows.next().map_err(|e| e.to_string())? {
         let card_row = row_to_card_row(row).map_err(|e| e.to_string())?;
+        Ok(Some(Card::from(card_row)))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Fetch a card by id. Sync helper used by the ACP runner; returns
+/// `AcpError` so callers can use `?` alongside other `AcpError` results.
+pub fn get_card_by_id(conn: &rusqlite::Connection, id: &str) -> Result<Option<Card>, crate::error::AcpError> {
+    let mut stmt = conn
+        .prepare(&format!("SELECT {CARD_COLUMNS} FROM cards WHERE id = ?1 LIMIT 1"))
+        .map_err(crate::error::AcpError::internal)?;
+    let mut rows = stmt
+        .query(rusqlite::params![id])
+        .map_err(crate::error::AcpError::internal)?;
+    if let Some(row) = rows.next().map_err(crate::error::AcpError::internal)? {
+        let card_row = row_to_card_row(row).map_err(crate::error::AcpError::internal)?;
         Ok(Some(Card::from(card_row)))
     } else {
         Ok(None)

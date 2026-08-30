@@ -433,7 +433,10 @@ pub async fn acp_create_run(
         let repo_path = match card.repo_path.as_ref() {
             Some(p) if !p.is_empty() => p.clone(),
             _ => match card.tree_source_id.as_ref() {
-                Some(tid) => crate::db::settings::get_tree_source_path(&conn, tid)?,
+                Some(tid) => crate::db::settings::get_tree_source_path(&conn, tid)?
+                    .ok_or_else(|| AcpError::validation(format!(
+                        "Card '{card_id}' tree source '{tid}' no longer exists."
+                    )))?,
                 None => return Err(AcpError::validation(format!(
                     "Card '{card_id}' has no repo_path or tree_source_id set."
                 ))),
