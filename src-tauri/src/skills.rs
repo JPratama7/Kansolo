@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 use serde::Serialize;
-use crate::error::AcpError;
 
 /// Metadata for a skill, parsed from `SKILL.md` frontmatter.
 #[derive(Debug, Clone, Serialize)]
@@ -11,8 +10,9 @@ pub struct SkillManifest {
     pub path: PathBuf,
 }
 
-/// Resolve the skills directory: env `ACP_SKILLS_DIR` > DB setting
-/// `acp_skills_dir` > default `~/.agents/skills`.
+/// Resolve the skills directory: env `ACP_SKILLS_DIR` > default
+/// `~/.agents/skills`. The DB setting `acp_skills_dir` is NOT wired up
+/// here — only the env var and the home-dir default are consulted.
 fn skills_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("ACP_SKILLS_DIR") {
         return PathBuf::from(dir);
@@ -103,7 +103,7 @@ pub fn load_skills(names: &[String]) -> Vec<(String, String)> {
     for name in names {
         match load_skill_content(name) {
             Some(content) => result.push((name.clone(), content)),
-            None => eprintln!("warn: skill '{name}' not found"),
+            None => continue,
         }
     }
     result

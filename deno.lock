@@ -12,7 +12,6 @@
     "npm:@tauri-apps/api@2": "2.11.1",
     "npm:@tauri-apps/cli@*": "2.11.4",
     "npm:@tauri-apps/cli@2": "2.11.4",
-    "npm:@tauri-apps/plugin-opener@2": "2.5.4",
     "npm:@thisbeyond/solid-dnd@0.2": "0.2.0_solid-js@1.9.15",
     "npm:brotli-size@*": "4.0.0",
     "npm:esbuild@*": "0.25.12",
@@ -738,12 +737,6 @@
         "@tauri-apps/cli-win32-x64-msvc"
       ],
       "bin": true
-    },
-    "@tauri-apps/plugin-opener@2.5.4": {
-      "integrity": "sha512-1HnPkb+AmgO29HBazm4uPLKB+r7zzcTBW1d0fyYp1uP+jwtpoiNDGKMMzz58SFp49nOIrxdE3aUJtT57lfO9CQ==",
-      "dependencies": [
-        "@tauri-apps/api"
-      ]
     },
     "@testing-library/dom@10.4.1": {
       "integrity": "sha512-o4PXJQidqJl82ckFaXUeoAW+XysPLauYI43Abki5hABd853iMhitooc6znOnczgbTYmEP6U6/y1ZyKAIsvMKGg==",
@@ -2763,7 +2756,6 @@
         "npm:@tailwindcss/vite@^4.3.3",
         "npm:@tauri-apps/api@2",
         "npm:@tauri-apps/cli@2",
-        "npm:@tauri-apps/plugin-opener@2",
         "npm:@thisbeyond/solid-dnd@0.2",
         "npm:happy-dom@^20.11.6",
         "npm:micromark@^4.0.2",

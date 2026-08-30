@@ -16,6 +16,8 @@ export interface KanbanCard {
   sourceRef?: string;
   sourceStatus?: string;
   treeSourceId?: string;
+  /** Optional per-card repo path override (mirrors the Rust `repo_path` column). */
+  repoPath?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -105,8 +107,6 @@ export interface AgentRun {
   output: string | null;
   stopReason: string | null;
   error: string | null;
-  pid: number | null;
-  pgid: number | null;
   mergedAt: string | null;
   skills: string[];
   createdAt: string;
@@ -127,7 +127,7 @@ export type RunUpdate =
   | { type: 'completed'; output: string; stopReason: string }
   | { type: 'failed'; error: string }
   | { type: 'cancelled' }
-  | { type: 'permissionRequest'; requestId: string; description: string }
+  | { type: 'permissionRequest'; requestId: string; description: string; timeoutMs?: number }
   | { type: 'permissionTimeout' };
 
 /** Result of a diff request between agent branch and main. */

@@ -89,10 +89,12 @@ export default function Card(props: CardProps) {
               </span>
             )}
             <Show when={props.agentRun?.()}>
-              <AgentBadge
-                run={props.agentRun!()}
-                onClick={() => props.onAgentBadgeClick?.(card.id)}
-              />
+              {(run) => (
+                <AgentBadge
+                  run={run()}
+                  onClick={() => props.onAgentBadgeClick?.(card.id)}
+                />
+              )}
             </Show>
           </div>
           {card.source === 'local' && (

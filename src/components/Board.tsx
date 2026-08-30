@@ -2,8 +2,7 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount }
 import { Portal } from 'solid-js/web';
 import { DragDropContext, DragDropSensors, DragOverlay, useDragDropContext } from '@thisbeyond/solid-dnd';
 import { micromark } from 'micromark';
-import { Menu } from '@ark-ui/solid/menu';
-import { useMenu } from '@ark-ui/solid/menu';
+import { Menu, useMenu } from '@ark-ui/solid/menu';
 import { invoke } from '@tauri-apps/api/core';
 import { toaster } from './ui/toaster.ts';
 import type { ColumnId, KanbanCard, Priority, TreeSource } from '../types.ts';
@@ -21,19 +20,20 @@ import {
   acpListAgents,
   acpListSkills,
   acpCreateRun,
+  acpLatestRunForCard,
 } from '../db.ts';
 import Column from './Column.tsx';
 import EditModal, { type EditModalResult } from './EditModal.tsx';
 import AgentRunPanel from './AgentRunPanel.tsx';
 import SkillPicker from './SkillPicker.tsx';
 
-let reloadBoard: (() => void) | null = null;
+let reloadBoard: (() => Promise<void>) | null = null;
 
 /** Re-seed the board from the database. Used by App, e.g. after a sync.
- * Triggers each column to re-fetch with a visible loading state. */
+ * Triggers each column to re-fetch with a visible loading state, and
+ * resolves only once every column fetch has settled. */
 export function reload(): Promise<void> {
-  reloadBoard?.();
-  return Promise.resolve();
+  return reloadBoard?.() ?? Promise.resolve();
 }
 
 interface DragEndEvent {
@@ -139,6 +139,15 @@ export default function Board() {
       const map: Record<string, AgentRun> = {};
       for (const r of runs) map[r.cardId] = r;
       setActiveRuns(map);
+      // If the panel is open and the polled run is still active, refresh
+      // panelRun so status/terminal fields stay live without a separate fetch.
+      if (panelOpen()) {
+        const pr = panelRun();
+        if (pr) {
+          const updated = map[pr.cardId];
+          if (updated && updated.id === pr.id) setPanelRun(updated);
+        }
+      }
     } catch (e) {
       // Polling is best-effort; don't spam toasts on transient failures.
       console.error('acp_list_active_runs failed:', acpErrorMessage(e));
@@ -154,12 +163,25 @@ export default function Board() {
     onCleanup(() => clearInterval(id));
   });
 
-  /** Open the run panel for a card's (latest) run. Called from AgentBadge. */
+  /** Open the run panel for a card's run. Falls back to the latest run
+   * (any status) when no active run exists, so completed/failed runs can
+   * still be inspected instead of disappearing from the badge. */
   async function openRunPanel(cardId: string) {
-    const run = activeRuns()[cardId];
-    if (!run) return;
-    setPanelRun(run);
-    setPanelOpen(true);
+    const active = activeRuns()[cardId];
+    if (active) {
+      setPanelRun(active);
+      setPanelOpen(true);
+      return;
+    }
+    try {
+      const latest = await acpLatestRunForCard(cardId);
+      if (latest) {
+        setPanelRun(latest);
+        setPanelOpen(true);
+      }
+    } catch (e) {
+      console.error('acp_latest_run_for_card failed:', acpErrorMessage(e));
+    }
   }
 
   /** Right-click → "Start agent…": open the start dialog for a local card. */
@@ -286,21 +308,32 @@ export default function Board() {
     }
   }
 
-  // Sync reload: re-fetch every column with skeletons visible.
-  reloadBoard = () => {
-    for (const col of COLUMNS) void fetchColumn(col.id, true);
+  // Sync reload: re-fetch every column with skeletons visible. Awaits all
+  // three fetches so callers (App.finishSync) know when the board is stable.
+  reloadBoard = async () => {
+    await Promise.all(COLUMNS.map((col) => fetchColumn(col.id, true)));
   };
   onMount(() => {
-    void listTreeSources().then(setTreeSources);
-    for (const col of COLUMNS) void fetchColumn(col.id, true);
+    void listTreeSources().then(setTreeSources).catch((e) =>
+      toaster.error({ title: 'Could not load tree sources', description: acpErrorMessage(e) }),
+    );
+    for (const col of COLUMNS) {
+      void fetchColumn(col.id, true).catch((e) =>
+        toaster.error({ title: `Could not load column ${col.id}`, description: acpErrorMessage(e) }),
+      );
+    }
     void pollActiveRuns();
   });
 
   async function addCard(title: string, column: ColumnId) {
     // Backend returns the real card (UUID, position, timestamps) — append it
     // directly. No optimistic guess needed; the call is fast and gives us truth.
-    const card = await createLocalCard(title, column);
-    setCards((prev) => [...prev, card]);
+    try {
+      const card = await createLocalCard(title, column);
+      setCards((prev) => [...prev, card]);
+    } catch (e) {
+      toaster.error({ title: 'Add card failed', description: acpErrorMessage(e) });
+    }
   }
 
   async function editCard(id: string, title: string, description: string, priority: Priority, treeSourceId: string) {
@@ -318,7 +351,9 @@ export default function Board() {
     } catch (e) {
       // Revert: re-fetch the card's column to restore true state.
       const card = cards().find((c) => c.id === id);
-      if (card) void fetchColumn(card.column, false);
+      if (card) void fetchColumn(card.column, false).catch((err) =>
+        toaster.error({ title: 'Revert failed', description: acpErrorMessage(err) }),
+      );
       toaster.error({ title: 'Edit failed', description: acpErrorMessage(e) });
     }
   }
@@ -337,7 +372,9 @@ export default function Board() {
       await deleteCardDb(id);
     } catch (e) {
       // Revert: re-fetch the card's column to restore it.
-      if (card) void fetchColumn(card.column, false);
+      if (card) void fetchColumn(card.column, false).catch((err) =>
+        toaster.error({ title: 'Revert failed', description: acpErrorMessage(err) }),
+      );
       toaster.error({ title: 'Delete failed', description: acpErrorMessage(e) });
     }
   }
@@ -355,8 +392,12 @@ export default function Board() {
       await moveCardDb(id, column);
     } catch (e) {
       // Revert: re-fetch both affected columns.
-      void fetchColumn(oldColumn, false);
-      void fetchColumn(column, false);
+      void fetchColumn(oldColumn, false).catch((err) =>
+        toaster.error({ title: 'Revert failed', description: acpErrorMessage(err) }),
+      );
+      void fetchColumn(column, false).catch((err) =>
+        toaster.error({ title: 'Revert failed', description: acpErrorMessage(err) }),
+      );
       toaster.error({ title: 'Move failed', description: acpErrorMessage(e) });
     }
   }
@@ -378,7 +419,7 @@ export default function Board() {
     try {
       await invoke('open_in_editor', { path: src.path, command: src.editorCommand });
     } catch (e) {
-      console.error('open_in_editor failed:', e);
+      toaster.error({ title: 'Open in editor failed', description: acpErrorMessage(e) });
     }
   }
 

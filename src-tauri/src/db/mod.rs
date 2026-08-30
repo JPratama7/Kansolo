@@ -57,13 +57,24 @@ pub fn now_iso() -> String {
     format!("{year:04}-{month:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
 }
 
+/// Validate that `column` is one of the three board columns. Defense-in-depth
+/// guard used at every entry point that accepts a column from the API/sync
+/// layer, so a hostile or typo'd value is rejected before reaching SQL.
+pub fn validate_column(column: &str) -> Result<(), String> {
+    match column {
+        "backlog" | "ongoing" | "done" => Ok(()),
+        _ => Err("column must be backlog, ongoing, or done".to_string()),
+    }
+}
+
 /// Highest `position` value among cards in `column`, or 0 if the column is empty.
+/// `column` is bound as the sole SQL parameter — the literal `"column"` column
+/// name is hardcoded in the SQL string, so there is no string interpolation to
+/// inject. `validate_column` rejects anything outside backlog/ongoing/done.
 pub fn max_position(conn: &Connection, column: &str) -> Result<i64, String> {
+    validate_column(column)?;
     conn.query_row(
-        &format!(
-            "SELECT COALESCE(MAX(position), 0) FROM cards WHERE \"{}\" = ?1",
-            column
-        ),
+        r#"SELECT COALESCE(MAX(position), 0) FROM cards WHERE "column" = ?1"#,
         rusqlite::params![column],
         |row| row.get(0),
     )
@@ -151,6 +162,71 @@ pub struct ExternalSnapshot {
 /// `db::StatusMapping` keep working.
 pub use crate::mapping::StatusMapping;
 
+/// Read the last-synced snapshot for a `(source, source_ref)` pair, if any.
+/// Inner helper that runs on a borrowed connection (works inside a
+/// `Transaction` via deref coercion) so `sync_source` can do all its
+/// reads/writes on one atomic transaction. Mirrors the `get_snapshot`
+/// Tauri command in `db::settings`.
+pub fn get_snapshot_inner(
+    conn: &Connection,
+    source: &str,
+    source_ref: &str,
+) -> Result<Option<ExternalSnapshot>, String> {
+    conn.query_row(
+        r#"SELECT source, source_ref, title, description, priority, source_status, "column", synced_at
+           FROM external_snapshots WHERE source = ?1 AND source_ref = ?2 LIMIT 1"#,
+        rusqlite::params![source, source_ref],
+        |row| {
+            Ok(ExternalSnapshot {
+                source: row.get(0)?,
+                source_ref: row.get(1)?,
+                title: row.get(2)?,
+                description: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                priority: row
+                    .get::<_, Option<String>>(4)?
+                    .filter(|p| !p.is_empty())
+                    .unwrap_or_else(|| "medium".to_string()),
+                source_status: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                column: row.get(6)?,
+                synced_at: row.get(7)?,
+            })
+        },
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other.to_string()),
+    })
+}
+
+/// Upsert the snapshot row for a `(source, source_ref)` pair — the external
+/// state at this sync instant. Inner helper that runs on a borrowed
+/// connection (works inside a `Transaction` via deref coercion) so
+/// `sync_source` can do all its reads/writes on one atomic transaction.
+/// Mirrors the `save_snapshot` Tauri command in `db::settings`.
+pub fn save_snapshot_inner(conn: &Connection, snap: &ExternalSnapshot) -> Result<(), String> {
+    conn.execute(
+        r#"INSERT INTO external_snapshots
+             (source, source_ref, title, description, priority, source_status, "column", synced_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+           ON CONFLICT(source, source_ref) DO UPDATE SET
+             title = ?3, description = ?4, priority = ?5, source_status = ?6,
+             "column" = ?7, synced_at = ?8"#,
+        rusqlite::params![
+            snap.source,
+            snap.source_ref,
+            snap.title,
+            snap.description,
+            snap.priority,
+            snap.source_status,
+            snap.column,
+            snap.synced_at,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// A user-registered external source instance (Jira project, GitHub repo,
 /// etc.) with its config and status-to-column mapping.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,6 +264,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (9, include_str!("../../migrations/0009_drop_legacy_jira.sql")),
     (10, include_str!("../../migrations/0010_tree_source_id_fk.sql")),
     (11, include_str!("../../migrations/0011_agents_runs.sql")),
+    (12, include_str!("../../migrations/0012_drop_pid_pgid.sql")),
 ];
 
 /// Apply pending DB migrations via rusqlite. Idempotent — skips already-applied
@@ -363,5 +440,46 @@ mod fk_tests {
         crate::db::settings::ensure_tree_source_deletable(&conn, "ts-1").unwrap();
         // Delete succeeds
         conn.execute("DELETE FROM tree_sources WHERE id = ?1", rusqlite::params!["ts-1"]).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod column_validation_tests {
+    use super::{max_position, validate_column, test_db};
+
+    #[test]
+    fn validate_column_rejects_invalid_value() {
+        let err = validate_column("pending").unwrap_err();
+        assert_eq!(err, "column must be backlog, ongoing, or done");
+    }
+
+    #[test]
+    fn validate_column_accepts_board_columns() {
+        validate_column("backlog").unwrap();
+        validate_column("ongoing").unwrap();
+        validate_column("done").unwrap();
+    }
+
+    #[test]
+    fn max_position_rejects_hostile_column_string() {
+        // A pre-fix build interpolated `column` into the SQL, so this string
+        // would have been an injection vector. Post-fix it is bound as a plain
+        // parameter value AND rejected up-front by validate_column, so the
+        // cards table is untouched and we get the friendly error.
+        let conn = test_db();
+        let hostile = r#"backlog"; DROP TABLE cards; --"#;
+        let err = max_position(&conn, hostile).unwrap_err();
+        assert_eq!(err, "column must be backlog, ongoing, or done");
+        // Table still exists — no injection happened.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM cards", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn max_position_returns_zero_for_empty_column() {
+        let conn = test_db();
+        assert_eq!(max_position(&conn, "backlog").unwrap(), 0);
     }
 }

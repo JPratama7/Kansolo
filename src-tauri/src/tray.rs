@@ -13,7 +13,11 @@ use tauri::{
 const TOOLTIP: &str = "Kansolo";
 
 /// Build and install the tray icon + menu. Called once from `setup`.
-pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+///
+/// Returns an error (rather than panicking) if the default window icon
+/// isn't configured, so a misconfigured build surfaces as a setup failure
+/// instead of a process crash.
+pub fn install<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::error::Error>> {
     let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", "Hide", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -22,7 +26,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let icon = app
         .default_window_icon()
         .cloned()
-        .expect("default window icon must be configured");
+        .ok_or_else(|| "default window icon must be configured")?;
 
     TrayIconBuilder::with_id("main-tray")
         .icon(icon)
@@ -32,7 +36,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_window(app),
             "hide" => hide_window(app),
-            "quit" => app.exit(0),
+            "quit" => quit_app(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -74,4 +78,37 @@ fn toggle_window<R: Runtime>(app: &AppHandle<R>) {
             let _ = win.set_focus();
         }
     }
+}
+
+/// Quit the app: cancel all active agent runs (cooperative SDK shutdown) and
+/// mark their rows failed so card locks release, then exit. Best-effort —
+/// shutdown is bounded by `RunCore::shutdown`'s per-run 5s timeout, and DB
+/// errors are logged but never block exit.
+fn quit_app<R: Runtime>(app: &AppHandle<R>) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // Cancel active runs and collect their IDs.
+        let active_ids: Vec<String> = match handle.try_state::<crate::runner::RunnerState>() {
+            Some(state) => state.core.shutdown().await,
+            None => Vec::new(),
+        };
+        // Mark each reaped run failed in the DB so the card lock releases.
+        if !active_ids.is_empty() {
+            if let Ok(conn) = crate::db::open_db(&handle) {
+                let now = crate::db::now_iso();
+                for id in &active_ids {
+                    let _ = crate::db::agent_runs::update_status(
+                        &conn,
+                        id,
+                        "failed",
+                        None,
+                        None,
+                        Some("tasker quitting"),
+                        Some(&now),
+                    );
+                }
+            }
+        }
+        handle.exit(0);
+    });
 }

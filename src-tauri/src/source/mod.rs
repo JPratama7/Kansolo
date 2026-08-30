@@ -1,6 +1,7 @@
 pub mod jira;
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -104,10 +105,19 @@ pub struct FetchResult {
     pub unmapped_statuses: Vec<String>,
 }
 
-pub fn registry() -> HashMap<&'static str, Box<dyn SourceProvider>> {
-    let mut map: HashMap<&'static str, Box<dyn SourceProvider>> = HashMap::new();
-    map.insert("jira", Box::new(jira::JiraSource) as Box<dyn SourceProvider>);
-    map
+/// All registered source providers, keyed by `source_type`.
+///
+/// Built once and cached for the process lifetime via a `OnceLock` — the
+/// provider set is static and the HashMap is only ever read after init, so
+/// there's no need to rebuild it on every call. Returns a `&'static`
+/// reference; callers borrow rather than take ownership.
+pub fn registry() -> &'static HashMap<&'static str, Box<dyn SourceProvider>> {
+    static REGISTRY: OnceLock<HashMap<&'static str, Box<dyn SourceProvider>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        let mut map: HashMap<&'static str, Box<dyn SourceProvider>> = HashMap::new();
+        map.insert("jira", Box::new(jira::JiraSource) as Box<dyn SourceProvider>);
+        map
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -119,9 +129,11 @@ use std::collections::HashSet;
 use rusqlite::params;
 use tauri::AppHandle;
 
-use crate::db::{open_db, now_iso, SourceInstance};
-use crate::db::cards::{get_card_by_source_ref, upsert_card_from_sync};
-use crate::db::settings::{get_source, get_snapshot, save_snapshot};
+use crate::db::{get_snapshot_inner, now_iso, open_db, save_snapshot_inner, SourceInstance};
+use crate::db::cards::{
+    get_card_by_source_ref_inner, upsert_card_from_sync, upsert_card_from_sync_inner,
+};
+use crate::db::settings::{get_source, save_snapshot};
 use crate::mapping::{
     is_status_mapped, resolve_column, resolve_priority, StatusMapping,
 };
@@ -159,13 +171,13 @@ fn map_raw_card(raw: &RawCard, source_type: &str, mapping: &StatusMapping) -> (C
 async fn load_instance(
     app: &AppHandle,
     source_id: &str,
-) -> Result<(SourceInstance, &'static str, Box<dyn SourceProvider>), String> {
+) -> Result<(SourceInstance, &'static str, &'static Box<dyn SourceProvider>), String> {
     let instance = get_source(app.clone(), source_id.to_string())
         .await?
         .ok_or_else(|| format!("No source instance found for id `{source_id}`"))?;
-    let mut reg = registry();
+    let reg = registry();
     let provider = reg
-        .remove(instance.source_type.as_str())
+        .get(instance.source_type.as_str())
         .ok_or_else(|| format!("No provider registered for source type `{}`", instance.source_type))?;
     let source_type = provider.source_type();
     Ok((instance, source_type, provider))
@@ -227,36 +239,70 @@ pub async fn list_source_types() -> Result<Vec<SourceTypeMeta>, String> {
 /// Sync a source: fetch remote cards, 3-way merge against local + snapshot,
 /// persist creates/updates, and stash conflicts in `pending_conflicts` for
 /// the frontend to resolve via [`resolve_conflicts`].
+///
+/// Thin Tauri wrapper — opens one connection and delegates to
+/// [`sync_source_inner`], which runs the whole pipeline inside a single
+/// transaction so a mid-loop failure rolls back every upsert / snapshot /
+/// pending-conflict write from this run.
 #[tauri::command]
 pub async fn sync_source(app: AppHandle, source_id: String) -> Result<SyncResult, String> {
     let (instance, source_type, provider) = load_instance(&app, &source_id).await?;
-    let raw_cards = provider.fetch_raw(&instance.config).await?;
+    let mut conn = open_db(&app)?;
+    sync_source_inner(
+        &mut conn,
+        &source_id,
+        source_type,
+        &instance.status_mapping,
+        provider.as_ref(),
+        &instance.config,
+    )
+    .await
+}
+
+/// Atomic sync pipeline. Fetches raw cards from `provider`, then runs the
+/// 3-way merge + persist loop inside one transaction on `conn`:
+///
+/// - All card upserts, snapshot saves, and `pending_conflicts` inserts share
+///   the same transaction, so either the entire run commits or nothing does.
+/// - Any error returned from an inner helper (or the conflict insert) bubbles
+///   up via `?`; the `Transaction` is then dropped without `commit()`, which
+///   rolls it back — no partial upserts or conflicts survive.
+///
+/// Takes a `&dyn SourceProvider` so tests can substitute a fake double
+/// without going through the Tauri command / `AppHandle` seam.
+pub async fn sync_source_inner(
+    conn: &mut rusqlite::Connection,
+    source_id: &str,
+    source_type: &str,
+    status_mapping: &StatusMapping,
+    provider: &dyn SourceProvider,
+    config: &serde_json::Value,
+) -> Result<SyncResult, String> {
+    let raw_cards = provider.fetch_raw(config).await?;
     let synced_at = now_iso();
 
     let mut conflicts: Vec<SyncConflict> = Vec::new();
     let mut unmapped: HashSet<String> = HashSet::new();
     let mut imported: usize = 0;
-    let conn = open_db(&app)?;
 
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
     for raw in &raw_cards {
-        let (remote, mapped) = map_raw_card(raw, source_type, &instance.status_mapping);
+        let (remote, mapped) = map_raw_card(raw, source_type, status_mapping);
         if !mapped {
             unmapped.insert(raw.status_name.clone());
         }
 
         let source_ref = raw.source_ref.clone();
-        let local = get_card_by_source_ref(app.clone(), source_type.to_string(), source_ref.clone())
-            .await?;
-        let snapshot =
-            get_snapshot(app.clone(), source_type.to_string(), source_ref.clone()).await?;
+        let local = get_card_by_source_ref_inner(&tx, source_type, &source_ref)?;
+        let snapshot = get_snapshot_inner(&tx, source_type, &source_ref)?;
 
         let decision = plan_sync(&remote, local.as_ref(), snapshot.as_ref());
         match decision.decision_type {
             SyncDecisionType::Create | SyncDecisionType::Update => {
                 if let Some(card) = decision.card {
-                    upsert_card_from_sync(app.clone(), card.clone()).await?;
+                    upsert_card_from_sync_inner(&tx, &card)?;
                     let snap = snapshot_from_card(&card, source_type, &synced_at);
-                    save_snapshot(app.clone(), snap).await?;
+                    save_snapshot_inner(&tx, &snap)?;
                     imported += 1;
                 }
             }
@@ -269,7 +315,7 @@ pub async fn sync_source(app: AppHandle, source_id: String) -> Result<SyncResult
                 };
                 let conflict_json =
                     serde_json::to_string(&conflict).map_err(|e| e.to_string())?;
-                conn.execute(
+                tx.execute(
                     "INSERT INTO pending_conflicts (source_id, source_ref, conflict_json, created_at)
                      VALUES (?1, ?2, ?3, ?4)
                      ON CONFLICT(source_id, source_ref) DO UPDATE SET
@@ -282,6 +328,7 @@ pub async fn sync_source(app: AppHandle, source_id: String) -> Result<SyncResult
             SyncDecisionType::Noop => {}
         }
     }
+    tx.commit().map_err(|e| e.to_string())?;
 
     Ok(SyncResult {
         conflicts,
@@ -353,4 +400,160 @@ pub async fn preview_jql(jql_parts: serde_json::Value) -> Result<String, String>
     let parts: jira::JqlParts =
         serde_json::from_value(jql_parts).map_err(|e| format!("Invalid jql_parts: {e}"))?;
     Ok(jira::build_jql(&parts))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::test_db;
+    use async_trait::async_trait;
+
+    /// Fake `SourceProvider` test double. Returns a fixed batch of raw cards
+    /// (or an error) without any network I/O. Confirms the trait is
+    /// object-safe and mockable through the `&dyn SourceProvider` seam.
+    struct FakeProvider {
+        cards: Vec<RawCard>,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl SourceProvider for FakeProvider {
+        fn source_type(&self) -> &'static str {
+            "test"
+        }
+        fn display_label(&self) -> &'static str {
+            "Test"
+        }
+        async fn fetch_raw(&self, _config: &serde_json::Value) -> Result<Vec<RawCard>, String> {
+            if self.fail {
+                Err("fetch failed".to_string())
+            } else {
+                Ok(self.cards.clone())
+            }
+        }
+    }
+
+    fn raw(src_ref: &str, title: &str, status: &str) -> RawCard {
+        RawCard {
+            source_ref: src_ref.to_string(),
+            title: title.to_string(),
+            description: String::new(),
+            status_name: status.to_string(),
+            priority_name: None,
+        }
+    }
+
+    fn mapping() -> StatusMapping {
+        StatusMapping {
+            backlog: vec!["To Do".to_string()],
+            ongoing: vec!["In Progress".to_string()],
+            done: vec!["Done".to_string()],
+        }
+    }
+
+    fn count(conn: &rusqlite::Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn happy_path_persists_cards_and_snapshots() {
+        let mut conn = test_db();
+        let provider = FakeProvider {
+            cards: vec![raw("PROJ-1", "First", "To Do"), raw("PROJ-2", "Second", "Done")],
+            fail: false,
+        };
+        let result = sync_source_inner(
+            &mut conn,
+            "src-1",
+            "test",
+            &mapping(),
+            &provider,
+            &serde_json::json!({}),
+        )
+        .await
+        .expect("happy path sync should succeed");
+
+        assert_eq!(result.imported_count, 2);
+        assert!(result.conflicts.is_empty());
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM cards WHERE source = 'test'"), 2);
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM external_snapshots WHERE source = 'test'"),
+            2
+        );
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM pending_conflicts"), 0);
+    }
+
+    #[tokio::test]
+    async fn mid_loop_failure_rolls_back_transaction() {
+        let mut conn = test_db();
+        // Pre-insert a card whose id collides with the id `map_raw_card` will
+        // build for PROJ-2 (`{source_type}-{source_ref}` = "test-PROJ-2"), but
+        // with a different source_ref so the upsert takes the INSERT path and
+        // hits the PRIMARY KEY violation. PROJ-1 upserts first; PROJ-2 fails
+        // mid-loop; the whole transaction must roll back.
+        conn.execute(
+            r#"INSERT INTO cards (id, title, "column", source, position, source_ref, created_at, updated_at)
+               VALUES ('test-PROJ-2', 'blocker', 'backlog', 'test', 99, 'OTHER', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
+            [],
+        )
+        .unwrap();
+
+        let provider = FakeProvider {
+            cards: vec![raw("PROJ-1", "First", "To Do"), raw("PROJ-2", "Second", "Done")],
+            fail: false,
+        };
+        let err = sync_source_inner(
+            &mut conn,
+            "src-1",
+            "test",
+            &mapping(),
+            &provider,
+            &serde_json::json!({}),
+        )
+        .await
+        .expect_err("mid-loop failure should surface an error");
+        assert!(err.contains("UNIQUE") || err.contains("constraint") || err.contains("PRIMARY"),
+            "error should mention the constraint violation, got: {err}");
+
+        // PROJ-1 was upserted inside the transaction before the failure — it
+        // must have been rolled back.
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM cards WHERE source = 'test' AND source_ref = 'PROJ-1'"),
+            0
+        );
+        // No snapshots persisted this run.
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM external_snapshots WHERE source = 'test'"),
+            0
+        );
+        // No pending conflicts persisted.
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM pending_conflicts"), 0);
+        // The pre-existing row (inserted outside the tx) survives.
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM cards WHERE source = 'test' AND source_ref = 'OTHER'"),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_failure_persists_nothing() {
+        let mut conn = test_db();
+        let provider = FakeProvider {
+            cards: vec![raw("PROJ-1", "First", "To Do")],
+            fail: true,
+        };
+        let err = sync_source_inner(
+            &mut conn,
+            "src-1",
+            "test",
+            &mapping(),
+            &provider,
+            &serde_json::json!({}),
+        )
+        .await
+        .expect_err("fetch failure should surface an error");
+        assert!(err.contains("fetch failed"), "got: {err}");
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM cards WHERE source = 'test'"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM pending_conflicts"), 0);
+    }
 }

@@ -33,6 +33,65 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::db::{open_db_path, Card, CardRow, now_iso};
+use rusqlite::params;
+
+/// Settings key under which the MCP bearer token is persisted.
+const MCP_TOKEN_KEY: &str = "mcp_token";
+
+/// Read the persisted MCP bearer token from the settings table, if any.
+/// Returns `None` when the row is absent or empty.
+fn read_mcp_token(db_path: &PathBuf) -> Option<String> {
+    let conn = open_db_path(db_path).ok()?;
+    conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        params![MCP_TOKEN_KEY],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .filter(|t| !t.is_empty())
+}
+
+/// Load the persisted MCP bearer token, or generate + persist a fresh one.
+/// The token is a UUID v4 string — random enough for a local-only bearer
+/// secret. Lives entirely in `mcp.rs` (no `lib.rs` involvement).
+fn load_or_create_token(db_path: &PathBuf) -> Result<String, String> {
+    if let Some(t) = read_mcp_token(db_path) {
+        return Ok(t);
+    }
+    let token = uuid::Uuid::new_v4().to_string();
+    let conn = open_db_path(db_path)?;
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = ?2",
+        params![MCP_TOKEN_KEY, &token],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(token)
+}
+
+/// axum middleware: reject requests whose `Authorization` header is not
+/// `Bearer <token>`. Used to gate the local MCP HTTP endpoint.
+async fn require_bearer(
+    axum::extract::State(token): axum::extract::State<Arc<String>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let expected = format!("Bearer {token}");
+    let authorized = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|h| h.to_str().ok())
+        .map(|h| h == expected)
+        .unwrap_or(false);
+    if authorized {
+        next.run(request).await
+    } else {
+        axum::response::Response::builder()
+            .status(axum::http::StatusCode::UNAUTHORIZED)
+            .body(axum::body::Body::empty())
+            .unwrap()
+    }
+}
 
 /// A running MCP server instance: the spawned axum task plus the token used to
 /// ask it to stop gracefully.
@@ -53,6 +112,9 @@ pub struct McpState {
 pub struct McpStatus {
     pub running: bool,
     pub port: Option<u16>,
+    /// Whether a bearer token is persisted for the MCP server. The token
+    /// itself is never exposed to the UI — only its presence.
+    pub has_token: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -133,7 +195,17 @@ impl KansoloMcp {
                 })
             })
             .map_err(|e| McpError::internal_error("db_query_failed", Some(serde_json::json!({ "error": e.to_string() }))))?;
-        let cards: Vec<Card> = rows.filter_map(Result::ok).map(Card::from).collect();
+        let cards: Vec<Card> = {
+            let mut out = Vec::new();
+            for r in rows {
+                let row = r.map_err(|e| McpError::internal_error(
+                    "db_row_failed",
+                    Some(serde_json::json!({ "error": e.to_string() })),
+                ))?;
+                out.push(Card::from(row));
+            }
+            out
+        };
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&cards)
                 .map_err(|e| McpError::internal_error("serialize_failed", Some(serde_json::json!({ "error": e.to_string() }))))?,
@@ -254,10 +326,12 @@ impl ServerHandler for KansoloMcp {
 
 /// Spawn the MCP HTTP server on `127.0.0.1:{port}`. Returns once the server is
 /// bound (or fails to bind) by running the bind inside the spawned task and
-/// signalling readiness via a oneshot channel.
+/// signalling readiness via a oneshot channel. Every request must present
+/// `Authorization: Bearer <token>` (see [`require_bearer`]).
 async fn start_server(
     db_path: PathBuf,
     port: u16,
+    token: Arc<String>,
 ) -> Result<(tokio::task::JoinHandle<()>, CancellationToken), String> {
     let cancel = CancellationToken::new();
     let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
@@ -269,7 +343,9 @@ async fn start_server(
             LocalSessionManager::default().into(),
             StreamableHttpServerConfig::default(),
         );
-        let router = axum::Router::new().nest_service("/mcp", service);
+        let router = axum::Router::new()
+            .nest_service("/mcp", service)
+            .layer(axum::middleware::from_fn_with_state(token, require_bearer));
         let bind = format!("127.0.0.1:{port}");
         let listener = match tokio::net::TcpListener::bind(&bind).await {
             Ok(l) => {
@@ -321,7 +397,10 @@ pub async fn apply<R: Runtime>(
             handle.cancel.cancel();
             let _ = handle.join.await;
         }
-        return Ok(McpStatus { running: false, port: None });
+        let has_token = db_path_for(app)
+            .map(|p| read_mcp_token(&p).is_some())
+            .unwrap_or(false);
+        return Ok(McpStatus { running: false, port: None, has_token });
     }
 
     if currently_running {
@@ -334,19 +413,24 @@ pub async fn apply<R: Runtime>(
     }
 
     let db_path = db_path_for(app)?;
-    let (join, cancel) = start_server(db_path, port).await?;
+    let token = load_or_create_token(&db_path)?;
+    let (join, cancel) = start_server(db_path, port, Arc::new(token)).await?;
     *guard = Some(McpHandle { join, cancel });
-    Ok(McpStatus { running: true, port: Some(port) })
+    Ok(McpStatus { running: true, port: Some(port), has_token: true })
 }
 
-/// Report the current running state.
-pub async fn status(state: &State<'_, McpState>) -> McpStatus {
+/// Report the current running state. `has_token` reflects whether a bearer
+/// token is persisted in settings — the token itself is never exposed.
+pub async fn status<R: Runtime>(app: &AppHandle<R>, state: &State<'_, McpState>) -> McpStatus {
     let guard = state.server.lock().await;
+    let has_token = db_path_for(app)
+        .map(|p| read_mcp_token(&p).is_some())
+        .unwrap_or(false);
     if guard.is_some() {
         // Port is not tracked separately here; the caller knows the configured port.
-        McpStatus { running: true, port: None }
+        McpStatus { running: true, port: None, has_token }
     } else {
-        McpStatus { running: false, port: None }
+        McpStatus { running: false, port: None, has_token }
     }
 }
 
@@ -368,8 +452,11 @@ pub async fn mcp_apply<R: Runtime>(
 
 /// Report whether the MCP server is currently running.
 #[tauri::command]
-pub async fn mcp_status(state: State<'_, McpState>) -> Result<McpStatus, String> {
-    Ok(status(&state).await)
+pub async fn mcp_status<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, McpState>,
+) -> Result<McpStatus, String> {
+    Ok(status(&app, &state).await)
 }
 
 #[cfg(test)]
@@ -386,5 +473,55 @@ mod tests {
         assert_eq!(ts.as_bytes()[10], b'T');
         assert_eq!(ts.as_bytes()[13], b':');
         assert_eq!(ts.as_bytes()[16], b':');
+    }
+
+    /// Issue a raw HTTP/1.1 GET to `addr/mcp` with the given `Authorization`
+    /// header value (empty string => no header). Returns the full response.
+    async fn raw_http_get(addr: std::net::SocketAddr, auth: &str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = if auth.is_empty() {
+            format!("GET /mcp HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n")
+        } else {
+            format!(
+                "GET /mcp HTTP/1.1\r\nHost: {addr}\r\nAuthorization: {auth}\r\nConnection: close\r\n\r\n"
+            )
+        };
+        stream.write_all(req.as_bytes()).await.unwrap();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).await.unwrap();
+        String::from_utf8_lossy(&buf).to_string()
+    }
+
+    /// The MCP endpoint must reject unauthenticated requests with 401 and
+    /// accept only the correct bearer token.
+    #[tokio::test]
+    async fn mcp_request_without_token_is_401() {
+        let token = Arc::new("test-secret".to_string());
+        let app = axum::Router::new()
+            .route("/mcp", axum::routing::any(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(token, require_bearer));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cancel = CancellationToken::new();
+        let ct = cancel.clone();
+        let join = tokio::spawn(async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move { ct.cancelled().await })
+                .await;
+        });
+
+        // No Authorization header -> 401.
+        let resp = raw_http_get(addr, "").await;
+        assert!(resp.starts_with("HTTP/1.1 401"), "no-auth: {resp}");
+        // Correct bearer -> 200.
+        let resp = raw_http_get(addr, "Bearer test-secret").await;
+        assert!(resp.starts_with("HTTP/1.1 200"), "correct: {resp}");
+        // Wrong bearer -> 401.
+        let resp = raw_http_get(addr, "Bearer wrong").await;
+        assert!(resp.starts_with("HTTP/1.1 401"), "wrong: {resp}");
+
+        cancel.cancel();
+        let _ = join.await;
     }
 }

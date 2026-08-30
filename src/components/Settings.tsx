@@ -1,4 +1,4 @@
-import { For, Show, createComponent, createEffect, createMemo, createSignal } from 'solid-js';
+import { For, Show, createComponent, createEffect, createMemo, createSignal, type Component } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import { Dialog } from '@ark-ui/solid/dialog';
 import { invoke } from '@tauri-apps/api/core';
@@ -18,7 +18,7 @@ import {
   updateTreeSource,
   acpErrorMessage,
 } from '../db.ts';
-import { SETTINGS_REGISTRY } from './settings/registry.ts';
+import { SETTINGS_REGISTRY, type SourceSettingsProps } from './settings/registry.ts';
 import AgentRegistry from './settings/AgentRegistry.tsx';
 import AcpSettings from './settings/AcpSettings.tsx';
 import { ArkSelect } from './ui/ArkSelect.tsx';
@@ -53,10 +53,7 @@ export default function Settings(props: SettingsProps) {
   const [editLabel, setEditLabel] = createSignal('');
   const [editEnabled, setEditEnabled] = createSignal(true);
   // The settings component for the editing source's type (sync-loaded).
-  const [EditComponent, setEditComponent] = createSignal<((p: {
-    instance: SourceInstance;
-    onSave: (config: Record<string, unknown>, statusMapping: StatusMapping) => void;
-  }) => any) | null>(null);
+  const [EditComponent, setEditComponent] = createSignal<Component<SourceSettingsProps> | null>(null);
   const [addPickerOpen, setAddPickerOpen] = createSignal(false);
   const [addType, setAddType] = createSignal<string>('');
   const [addLabel, setAddLabel] = createSignal('');
@@ -103,24 +100,31 @@ export default function Settings(props: SettingsProps) {
   createEffect(() => {
     if (!props.open) return;
     void (async () => {
-      setSourceTypes(await listSourceTypes());
-      await refreshSources();
-      const settings = await getAllSettings();
-      setMcpEnabled(isTrue(settings['mcp_enabled']));
-      setMcpPort(parseInt(settings['mcp_port'] ?? '27816', 10) || 27816);
-      setCloseToTray(settings['close_to_tray'] !== 'false');
-      setEditorCommand(settings['editor_command'] ?? 'code');
-      const savedW = parseInt(settings['settings_w'] ?? '', 10);
-      const savedH = parseInt(settings['settings_h'] ?? '', 10);
-      if (savedW > 0) setPanelW(savedW);
-      if (savedH > 0) setPanelH(savedH);
       try {
-        const status = await invoke<McpStatus>('mcp_status');
-        setMcpRunning(status.running);
-      } catch {
-        setMcpRunning(false);
+        setSourceTypes(await listSourceTypes());
+        await refreshSources();
+        const settings = await getAllSettings();
+        setMcpEnabled(isTrue(settings['mcp_enabled']));
+        setMcpPort(parseInt(settings['mcp_port'] ?? '27816', 10) || 27816);
+        setCloseToTray(settings['close_to_tray'] !== 'false');
+        setEditorCommand(settings['editor_command'] ?? 'code');
+        const savedW = parseInt(settings['settings_w'] ?? '', 10);
+        const savedH = parseInt(settings['settings_h'] ?? '', 10);
+        if (savedW > 0) setPanelW(savedW);
+        if (savedH > 0) setPanelH(savedH);
+        try {
+          const status = await invoke<McpStatus>('mcp_status');
+          setMcpRunning(status.running);
+        } catch {
+          setMcpRunning(false);
+        }
+        setTreeSources(await listTreeSources());
+      } catch (e) {
+        toaster.error({
+          title: 'Could not load settings',
+          description: e instanceof Error ? e.message : String(e),
+        });
       }
-      setTreeSources(await listTreeSources());
     })();
   });
 
@@ -171,14 +175,11 @@ export default function Settings(props: SettingsProps) {
     setEditEnabled(src.enabled);
     setEditComponent(null);
     const Comp = SETTINGS_REGISTRY[src.sourceType];
-    if (typeof Comp !== 'function') {
+    if (!Comp) {
       setError(`No settings component registered for source type "${src.sourceType}".`);
       return;
     }
-    setEditComponent(() => Comp as (p: {
-      instance: SourceInstance;
-      onSave: (config: Record<string, unknown>, statusMapping: StatusMapping) => void;
-    }) => any);
+    setEditComponent(() => Comp);
   }
 
   async function handleSaveEdit(config: Record<string, unknown>, statusMapping: StatusMapping) {
@@ -286,17 +287,25 @@ export default function Settings(props: SettingsProps) {
     const label = newTreeLabel().trim();
     const path = newTreePath().trim();
     if (!label || !path) return;
-    await addTreeSource(label, path, newTreeEditor());
-    setNewTreeLabel('');
-    setNewTreePath('');
-    setNewTreeEditor('');
-    setTreeSources(await listTreeSources());
-    toaster.success({ title: 'Tree source added', description: label });
+    try {
+      await addTreeSource(label, path, newTreeEditor());
+      setNewTreeLabel('');
+      setNewTreePath('');
+      setNewTreeEditor('');
+      setTreeSources(await listTreeSources());
+      toaster.success({ title: 'Tree source added', description: label });
+    } catch (e) {
+      toaster.error({ title: 'Add tree source failed', description: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   async function handleDeleteTree(id: string) {
-    await deleteTreeSource(id);
-    setTreeSources(await listTreeSources());
+    try {
+      await deleteTreeSource(id);
+      setTreeSources(await listTreeSources());
+    } catch (e) {
+      toaster.error({ title: 'Delete tree source failed', description: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   function startEditTree(src: TreeSource) {
@@ -312,9 +321,13 @@ export default function Settings(props: SettingsProps) {
     const label = editTreeLabel().trim();
     const path = editTreePath().trim();
     if (!label || !path) return;
-    await updateTreeSource(src.id, label, path, editTreeEditor());
-    setEditingTree(null);
-    setTreeSources(await listTreeSources());
+    try {
+      await updateTreeSource(src.id, label, path, editTreeEditor());
+      setEditingTree(null);
+      setTreeSources(await listTreeSources());
+    } catch (e) {
+      toaster.error({ title: 'Save tree source failed', description: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   const INPUT =
