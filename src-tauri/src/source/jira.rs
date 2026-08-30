@@ -393,7 +393,7 @@ fn build_search_url(base_url: &str, jql: &str, page_token: Option<&str>) -> Stri
     let host = without_scheme.strip_suffix('/').unwrap_or(without_scheme);
     let encoded_jql = urlencoding::encode(jql);
     let mut url = format!(
-        "https://{host}/rest/api/3/search/jql?jql={encoded_jql}&fields=summary,status,description,priority&maxResults=100"
+        "https://{host}/rest/api/3/search/jql?jql={encoded_jql}&fields=key,summary,status,description,priority&maxResults=100"
     );
     if let Some(token) = page_token {
         url.push_str("&nextPageToken=");
@@ -766,17 +766,17 @@ mod tests {
         );
         assert_eq!(
             url,
-            "https://example.atlassian.net/rest/api/3/search/jql?jql=project%20%3D%20DEMO%20AND%20status%20%21%3D%20%22Done%22&fields=summary,status,description,priority&maxResults=100"
+            "https://example.atlassian.net/rest/api/3/search/jql?jql=project%20%3D%20DEMO%20AND%20status%20%21%3D%20%22Done%22&fields=key,summary,status,description,priority&maxResults=100"
         );
         // A user who pastes a full URL with a scheme must not produce a
         // double-scheme URL (`https://https://host`).
         assert_eq!(
             build_search_url("https://example.atlassian.net", "project = DEMO", None),
-            "https://example.atlassian.net/rest/api/3/search/jql?jql=project%20%3D%20DEMO&fields=summary,status,description,priority&maxResults=100"
+            "https://example.atlassian.net/rest/api/3/search/jql?jql=project%20%3D%20DEMO&fields=key,summary,status,description,priority&maxResults=100"
         );
         assert_eq!(
             build_search_url("http://example.atlassian.net/", "project = DEMO", None),
-            "https://example.atlassian.net/rest/api/3/search/jql?jql=project%20%3D%20DEMO&fields=summary,status,description,priority&maxResults=100"
+            "https://example.atlassian.net/rest/api/3/search/jql?jql=project%20%3D%20DEMO&fields=key,summary,status,description,priority&maxResults=100"
         );
         let auth = basic_auth_header("user", "secret");
         assert!(auth.starts_with("Basic "));
@@ -948,7 +948,7 @@ mod tests {
         );
         assert_eq!(
             next_url,
-            "https://example.atlassian.net/rest/api/3/search/jql?jql=project%20%3D%20DEMO&fields=summary,status,description,priority&maxResults=100&nextPageToken=abc%20123%2F%3D%3D"
+            "https://example.atlassian.net/rest/api/3/search/jql?jql=project%20%3D%20DEMO&fields=key,summary,status,description,priority&maxResults=100&nextPageToken=abc%20123%2F%3D%3D"
         );
 
         // An empty nextPageToken is normalized to None — no extra page fetch.
