@@ -34,6 +34,7 @@ fn test_db() -> Connection {
              source_status TEXT,
              tree_source_id TEXT,
              repo_path TEXT,
+            source_instance_id TEXT,
              created_at TEXT NOT NULL,
              updated_at TEXT NOT NULL,
              FOREIGN KEY (tree_source_id) REFERENCES tree_sources(id) ON DELETE RESTRICT

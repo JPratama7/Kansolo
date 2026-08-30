@@ -18,6 +18,8 @@ export interface KanbanCard {
   treeSourceId?: string;
   /** Optional per-card repo path override (mirrors the Rust `repo_path` column). */
   repoPath?: string;
+  /** Owning source instance id (FK → sources.id). Null for local cards. */
+  sourceInstanceId?: string;
   createdAt: string;
   updatedAt: string;
 }

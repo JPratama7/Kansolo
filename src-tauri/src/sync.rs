@@ -306,9 +306,16 @@ pub fn apply_resolution(
 // ---------------------------------------------------------------------------
 
 /// Build a snapshot from a remote card (the external state at this sync
-/// instant). `source` identifies the originating system (e.g. `"jira"`).
-pub fn snapshot_from_card(remote: &Card, source: &str, synced_at: &str) -> ExternalSnapshot {
+/// instant). `source_instance_id` is the owning `sources.id`; `source` is the
+/// originating system type string (e.g. `"jira"`) kept for display.
+pub fn snapshot_from_card(
+    remote: &Card,
+    source_instance_id: &str,
+    source: &str,
+    synced_at: &str,
+) -> ExternalSnapshot {
     ExternalSnapshot {
+        source_instance_id: source_instance_id.to_string(),
         source: source.to_string(),
         source_ref: remote.source_ref.clone().unwrap_or_default(),
         title: remote.title.clone(),
@@ -345,6 +352,7 @@ mod tests {
             source_status: Some("To Do".to_string()),
             tree_source_id: None,
             repo_path: None,
+            source_instance_id: None,
             created_at: NOW.to_string(),
             updated_at: NOW.to_string(),
         };
@@ -356,6 +364,7 @@ mod tests {
     /// sync.test.ts. `jiraKey` → `source_ref`, `jiraStatus` → `source_status`.
     fn make_snap(f: impl FnOnce(&mut ExternalSnapshot)) -> ExternalSnapshot {
         let mut snap = ExternalSnapshot {
+            source_instance_id: "src-1".to_string(),
             source: "jira".to_string(),
             source_ref: "PROJ-1".to_string(),
             title: "t".to_string(),
@@ -559,7 +568,7 @@ mod tests {
             c.source_status = Some("In Progress".to_string());
             c.column = "ongoing".to_string();
         });
-        let snap = snapshot_from_card(&remote, "jira", NOW);
+        let snap = snapshot_from_card(&remote, "src-1", "jira", NOW);
         assert_eq!(snap.source_ref, "PROJ-1");
         assert_eq!(snap.title, "T");
         assert_eq!(snap.source_status, "In Progress");
