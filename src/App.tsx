@@ -12,6 +12,7 @@ import {
   resolveConflicts,
   setSetting,
   syncSource,
+  acpErrorMessage,
 } from './db.ts';
 import type { ConflictResolution, SyncConflict } from './types.ts';
 
@@ -67,7 +68,7 @@ function App() {
       if (lastSyncedAt) await finishSync(lastSyncedAt);
       setSyncSummary(summary);
     } catch (e) {
-      setSyncError(e instanceof Error ? e.message : String(e));
+      setSyncError(acpErrorMessage(e));
     } finally {
       setSyncing(false);
     }
@@ -85,7 +86,7 @@ function App() {
       const syncedAt = new Date().toISOString();
       await finishSync(syncedAt);
     } catch (e) {
-      setSyncError(e instanceof Error ? e.message : String(e));
+      setSyncError(acpErrorMessage(e));
     } finally {
       setSyncing(false);
     }
@@ -210,15 +211,17 @@ function App() {
       <Toaster toaster={toaster}>
         {(toast) => (
           <Toast.Root
-            class="bg-surface border border-border-subtle rounded-[var(--radius-card)] shadow-2xl px-4 py-3 min-w-[240px]"
+            class="relative bg-surface border border-border-subtle rounded-[var(--radius-card)] shadow-2xl px-4 py-3 min-w-[240px]"
             data-type={toast().type}
           >
-            <Toast.Title class="text-sm font-semibold text-ink" />
-            <Toast.Description class="text-xs text-ink-secondary" />
+            <Toast.CloseTrigger class="absolute top-1.5 right-1.5 text-ink-secondary hover:text-ink text-xs leading-none px-1" aria-label="Close">×</Toast.CloseTrigger>
+            <Toast.Title class="text-sm font-semibold text-ink pr-4">{toast().title}</Toast.Title>
+            <Toast.Description class="text-xs text-ink-secondary">{toast().description}</Toast.Description>
             <Show when={toast().action}>
-              <Toast.ActionTrigger class="mt-2 text-xs font-semibold text-accent hover:text-accent-hover" />
+              <Toast.ActionTrigger class="mt-2 text-xs font-semibold text-accent hover:text-accent-hover">
+                {toast().action?.label}
+              </Toast.ActionTrigger>
             </Show>
-            <Toast.CloseTrigger class="text-ink-secondary hover:text-ink text-xs ml-2" aria-label="Close" />
           </Toast.Root>
         )}
       </Toaster>

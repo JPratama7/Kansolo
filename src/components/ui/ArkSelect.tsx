@@ -31,7 +31,7 @@ export function ArkSelect(props: ArkSelectProps): JSX.Element {
       onValueChange={(e) => props.onValueChange(e.value[0] ?? '')}
     >
       <Select.HiddenSelect name={props.name} />
-      <Select.Trigger class={props.class}>
+      <Select.Trigger class={`flex items-center justify-between gap-2 ${props.class ?? ''}`}>
         <Select.ValueText placeholder={props.placeholder} />
         <Select.Indicator>
           <span class="i-carat-down" aria-hidden="true">▾</span>
