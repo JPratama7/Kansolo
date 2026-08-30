@@ -184,7 +184,7 @@ export default function Board() {
     }
   }
 
-  /** Right-click → "Start agent…": open the start dialog for a local card. */
+  /** Right-click → "Start agent…": open the start dialog for a card with a repo path. */
   async function startAgentRun(card: KanbanCard) {
     setStartDialogCard(card);
     setStartDialogOpen(true);
@@ -506,16 +506,17 @@ export default function Board() {
             <Menu.Item value="edit" onSelect={editFromMenu} data-testid="menu-item-edit" class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer">
               Edit
             </Menu.Item>
-            <Show when={currentlyMenuingCard()?.source === 'local'}>
+            <Show when={currentlyMenuingCard()?.repoPath || currentlyMenuingCard()?.treeSourceId}>
               <Menu.Item
                 value="agent"
                 data-testid="menu-item-agent"
+                disabled={!!activeRuns()[currentlyMenuingCard()?.id ?? '']}
                 onSelect={() => {
                   const card = currentlyMenuingCard();
                   if (card) void startAgentRun(card);
                   setCurrentlyMenuingCard(null);
                 }}
-                class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer"
+                class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer data-[disabled]:opacity-40"
               >
                 Start agent…
               </Menu.Item>
