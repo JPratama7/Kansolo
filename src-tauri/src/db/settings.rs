@@ -288,7 +288,7 @@ fn redact_config_token(config: &mut Value) {
 /// plaintext never reaches the UI via the read path. The edit form relies on
 /// the TS placeholder model to preserve the stored token when the field is
 /// untouched.
-fn row_to_source_instance(row: &rusqlite::Row) -> rusqlite::Result<SourceInstance> {
+fn parse_source_row(row: &rusqlite::Row, redact: bool) -> rusqlite::Result<SourceInstance> {
     let config_json: String = row.get("config_json")?;
     let status_mapping_json: String = row.get("status_mapping_json")?;
     let enabled: i64 = row.get("enabled")?;
@@ -299,7 +299,9 @@ fn row_to_source_instance(row: &rusqlite::Row) -> rusqlite::Result<SourceInstanc
             Box::new(e),
         )
     })?;
-    redact_config_token(&mut config);
+    if redact {
+        redact_config_token(&mut config);
+    }
     let status_mapping: StatusMapping = serde_json::from_str(&status_mapping_json).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(
             1,
@@ -316,6 +318,18 @@ fn row_to_source_instance(row: &rusqlite::Row) -> rusqlite::Result<SourceInstanc
         enabled: enabled != 0,
         created_at: row.get("created_at")?,
     })
+}
+
+/// Redacting row mapper — used by the IPC read path (`list_sources` /
+/// `get_source`) so the plaintext token never reaches the UI.
+fn row_to_source_instance(row: &rusqlite::Row) -> rusqlite::Result<SourceInstance> {
+    parse_source_row(row, true)
+}
+
+/// Non-redacting row mapper — used by internal backend callers (sync,
+/// fetch_options) that need the real token to authenticate upstream.
+fn row_to_source_instance_unredacted(row: &rusqlite::Row) -> rusqlite::Result<SourceInstance> {
+    parse_source_row(row, false)
 }
 
 const SOURCE_COLUMNS: &str = "id, source_type, label, config_json, status_mapping_json, enabled, created_at";
@@ -352,6 +366,25 @@ pub async fn get_source(app: AppHandle, id: String) -> Result<Option<SourceInsta
     .or_else(|e| match e {
         rusqlite::Error::QueryReturnedNoRows => Ok(None),
         other => Err(other.to_string()),
+    })
+}
+
+/// Fetch a single source instance by id **without redacting `config.token`**.
+/// Internal backend callers (sync, fetch_options) need the real token to
+/// authenticate upstream; only the IPC read path masks it for the UI.
+pub fn get_source_inner(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<Option<SourceInstance>, rusqlite::Error> {
+    conn.query_row(
+        &format!("SELECT {SOURCE_COLUMNS} FROM sources WHERE id = ?1 LIMIT 1"),
+        params![id],
+        row_to_source_instance_unredacted,
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other),
     })
 }
 

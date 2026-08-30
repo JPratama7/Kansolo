@@ -133,7 +133,7 @@ use crate::db::{get_snapshot_inner, now_iso, open_db, save_snapshot_inner, Sourc
 use crate::db::cards::{
     get_card_by_source_ref_inner, upsert_card_from_sync, upsert_card_from_sync_inner,
 };
-use crate::db::settings::{get_source, save_snapshot};
+use crate::db::settings::{get_source, get_source_inner, save_snapshot};
 use crate::mapping::{
     is_status_mapped, resolve_column, resolve_priority, StatusMapping,
 };
@@ -178,8 +178,13 @@ async fn load_instance(
     app: &AppHandle,
     source_id: &str,
 ) -> Result<(SourceInstance, &'static str, &'static Box<dyn SourceProvider>), String> {
-    let instance = get_source(app.clone(), source_id.to_string())
-        .await?
+    // Use the non-redacting read so backend callers (sync, fetch_options)
+    // get the real `config.token` needed to authenticate upstream. The IPC
+    // `get_source` command masks the token for the UI; using it here would
+    // send Jira `__REDACTED__` as the API token → 401 → empty project list.
+    let conn = open_db(app)?;
+    let instance = get_source_inner(&conn, source_id)
+        .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("No source instance found for id `{source_id}`"))?;
     let reg = registry();
     let provider = reg
