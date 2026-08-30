@@ -2,6 +2,8 @@ import { Show } from 'solid-js';
 import { createDraggable, useDragDropContext } from '@thisbeyond/solid-dnd';
 import { micromark } from 'micromark';
 import type { KanbanCard, Priority, TreeSource } from '../types.ts';
+import type { AgentRun } from '../db.ts';
+import AgentBadge from './AgentBadge.tsx';
 
 declare module 'solid-js' {
   namespace JSX {
@@ -18,6 +20,10 @@ interface CardProps {
   onDelete: (id: string) => void;
   /** Open the singleton context menu at the given screen point. */
   onContextMenuOpen: (card: KanbanCard, point: { x: number; y: number }) => void;
+  /** Active or most recent agent run for this card, or null. */
+  agentRun?: () => AgentRun | null;
+  /** Called when the agent badge is clicked. */
+  onAgentBadgeClick?: (cardId: string) => void;
 }
 
 const PRIORITY_STRIP: Record<Priority, string> = {
@@ -82,6 +88,12 @@ export default function Card(props: CardProps) {
                 {card.sourceRef}
               </span>
             )}
+            <Show when={props.agentRun?.()}>
+              <AgentBadge
+                run={props.agentRun!()}
+                onClick={() => props.onAgentBadgeClick?.(card.id)}
+              />
+            </Show>
           </div>
           {card.source === 'local' && (
             <div class="flex gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">

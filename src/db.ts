@@ -1,8 +1,14 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
+  Agent,
+  AgentRun,
   ColumnId,
   ConflictResolution,
+  DiffResult,
   KanbanCard,
+  MergeResult,
+  RunUpdate,
+  SkillManifest,
   SourceInstance,
   SourceTypeMeta,
   SyncResult,
@@ -40,6 +46,10 @@ export async function moveCard(id: string, column: ColumnId, position?: number) 
 
 export async function deleteCard(id: string) {
   await invoke('delete_card', { id });
+}
+
+export async function isCardLocked(id: string): Promise<boolean> {
+  return invoke<boolean>('is_card_locked_cmd', { id });
 }
 
 /** Remove every card sourced from `source` and its sync snapshots. Local cards stay. */
@@ -134,4 +144,96 @@ export function acpErrorMessage(e: unknown): string {
     return (e as { message: string }).message;
   }
   return e instanceof Error ? e.message : String(e);
+}
+
+// --- Agent / ACP commands ---
+
+export async function acpListAgents(): Promise<Agent[]> {
+  return invoke<Agent[]>('acp_list_agents');
+}
+
+export async function acpRegisterAgent(
+  name: string,
+  command: string,
+  description: string,
+  skills: string[],
+): Promise<void> {
+  await invoke('acp_register_agent', { name, command, description, skills });
+}
+
+export async function acpUpdateAgent(
+  name: string,
+  command: string,
+  description: string,
+  skills: string[],
+): Promise<void> {
+  await invoke('acp_update_agent', { name, command, description, skills });
+}
+
+export async function acpDeleteAgent(name: string, deleteRuns: boolean): Promise<void> {
+  await invoke('acp_delete_agent', { name, deleteRuns });
+}
+
+export async function acpListSkills(): Promise<SkillManifest[]> {
+  return invoke<SkillManifest[]>('acp_list_skills');
+}
+
+export async function acpListActiveRuns(): Promise<AgentRun[]> {
+  return invoke<AgentRun[]>('acp_list_active_runs');
+}
+
+export async function acpCreateRun(
+  cardId: string,
+  agentName: string,
+  skillNames: string[],
+): Promise<AgentRun> {
+  return invoke<AgentRun>('acp_create_run', { cardId, agentName, skillNames });
+}
+
+export async function acpGetRun(runId: string): Promise<AgentRun | null> {
+  return invoke<AgentRun | null>('acp_get_run', { runId });
+}
+
+export async function acpGetRunForCard(cardId: string): Promise<AgentRun | null> {
+  return invoke<AgentRun | null>('acp_get_run_for_card', { cardId });
+}
+
+export async function acpHasUpdates(runId: string): Promise<boolean> {
+  return invoke<boolean>('acp_has_updates', { runId });
+}
+
+export async function acpListRuns(limit?: number): Promise<AgentRun[]> {
+  return invoke<AgentRun[]>('acp_list_runs', { limit });
+}
+
+export async function acpCleanup(): Promise<string[]> {
+  return invoke<string[]>('acp_cleanup');
+}
+
+export async function acpListUpdates(runId: string): Promise<RunUpdate[]> {
+  return invoke<RunUpdate[]>('acp_list_updates', { runId });
+}
+
+export async function acpCancelRun(runId: string): Promise<void> {
+  await invoke('acp_cancel_run', { runId });
+}
+
+export async function acpRespondPermission(
+  runId: string,
+  requestId: string,
+  approved: boolean,
+): Promise<void> {
+  await invoke('acp_respond_permission', { runId, requestId, approved });
+}
+
+export async function acpDiffMain(cardId: string): Promise<DiffResult> {
+  return invoke<DiffResult>('acp_diff_main', { cardId });
+}
+
+export async function acpMerge(cardId: string, force?: boolean): Promise<MergeResult> {
+  return invoke<MergeResult>('acp_merge', { cardId, force });
+}
+
+export async function acpRemoveWorktree(cardId: string): Promise<void> {
+  await invoke('acp_remove_worktree', { cardId });
 }

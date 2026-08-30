@@ -1,6 +1,7 @@
 import { For, Show, createSignal } from 'solid-js';
 import { createDroppable, useDragDropContext } from '@thisbeyond/solid-dnd';
 import type { ColumnId, KanbanCard, TreeSource } from '../types.ts';
+import type { AgentRun } from '../db.ts';
 import Card from './Card.tsx';
 
 declare module 'solid-js' {
@@ -21,6 +22,10 @@ interface ColumnProps {
   onOpenEdit: (card: KanbanCard) => void;
   onDelete: (id: string) => void;
   onContextMenuOpen: (card: KanbanCard, point: { x: number; y: number }) => void;
+  /** Active agent runs keyed by card_id. */
+  activeRuns?: () => Record<string, AgentRun>;
+  /** Called when an agent badge is clicked. */
+  onAgentBadgeClick?: (cardId: string) => void;
 }
 
 import { PRIORITIES } from '../types.ts';
@@ -92,7 +97,17 @@ export default function Column(props: ColumnProps) {
               fallback={<p class="text-ink-muted text-xs py-3 text-center">Drag cards here</p>}
             >
               <For each={sortedCards()}>
-                {(card) => <Card card={card} treeSources={props.treeSources} onOpenEdit={props.onOpenEdit} onDelete={props.onDelete} onContextMenuOpen={props.onContextMenuOpen} />}
+                {(card) => (
+                  <Card
+                    card={card}
+                    treeSources={props.treeSources}
+                    onOpenEdit={props.onOpenEdit}
+                    onDelete={props.onDelete}
+                    onContextMenuOpen={props.onContextMenuOpen}
+                    agentRun={props.activeRuns ? () => props.activeRuns!()[card.id] ?? null : undefined}
+                    onAgentBadgeClick={props.onAgentBadgeClick}
+                  />
+                )}
               </For>
             </Show>
           }

@@ -16,8 +16,11 @@ import {
   setSetting,
   updateSource,
   updateTreeSource,
+  acpErrorMessage,
 } from '../db.ts';
 import { SETTINGS_REGISTRY } from './settings/registry.ts';
+import AgentRegistry from './settings/AgentRegistry.tsx';
+import AcpSettings from './settings/AcpSettings.tsx';
 import { ArkSelect } from './ui/ArkSelect.tsx';
 import { toaster } from './ui/toaster.ts';
 
@@ -38,6 +41,8 @@ const SECTIONS = [
   { id: 'mcp', label: 'MCP server' },
   { id: 'editor', label: 'Editor' },
   { id: 'tree', label: 'Tree sources' },
+  { id: 'agents', label: 'Agents' },
+  { id: 'acp', label: 'Agent settings' },
 ] as const;
 type SectionId = (typeof SECTIONS)[number]['id'];
 
@@ -757,6 +762,12 @@ export default function Settings(props: SettingsProps) {
                         </div>
                       </div>
                     </fieldset>
+                  )}
+                  {id === 'agents' && (
+                    <AgentRegistry />
+                  )}
+                  {id === 'acp' && (
+                    <AcpSettings />
                   )}
                 </div>
               )}
