@@ -175,7 +175,10 @@ impl RunCore {
                         // On cancel, send the ACP `session/cancel` notification
                         // (cooperative — the agent may ignore it) and emit a
                         // Cancelled update so the drain task records terminal
-                        // state.
+                        // state. When this closure returns, the SDK drops the
+                        // connection's `ChildGuard`, which SIGKILL's the entire
+                        // process group after a 1s grace period — so even an
+                        // agent that ignores `session/cancel` is hard-killed.
                         loop {
                             let read = session.read_update();
                             tokio::pin!(read);
@@ -187,10 +190,12 @@ impl RunCore {
                                     // select branch; we use the owned
                                     // `conn_for_cancel` clone below, so no
                                     // borrow conflict.
-                                    // Best-effort: ask the agent to cancel the
-                                    // session. The SDK does not kill the child
-                                    // process; this only sends the protocol
-                                    // notification (see report notes).
+                                    // Best-effort cooperative cancel: ask the
+                                    // agent to stop. If it ignores the
+                                    // notification, the SDK's ChildGuard
+                                    // (installed by `connect_with`) SIGKILL's
+                                    // the process group when this closure
+                                    // returns and the connection drops.
                                     let _ = conn_for_cancel.send_notification(
                                         agent_client_protocol::schema::v1::CancelNotification::new(session_id.clone()),
                                     );
@@ -1437,6 +1442,22 @@ mod tests {
         agent_client_protocol::AcpAgent::new(cfg)
     }
 
+    /// Like `mock_acp_agent(true)` but also tells the mock to write its PID
+    /// to `pid_file` — used by the hard-kill test to verify the SDK's
+    /// `ChildGuard` SIGKILL's the process group after cancel.
+    fn mock_acp_agent_with_pid(hang: bool, pid_file: &str) -> agent_client_protocol::AcpAgent {
+        use agent_client_protocol::AcpAgentConfig;
+        let mut cfg = AcpAgentConfig::new(std::env::current_exe().unwrap())
+            .arg("mock_acp_server")
+            .arg("--nocapture")
+            .env("MOCK_ACP_BINARY", "1")
+            .env("MOCK_ACP_PID_FILE", pid_file);
+        if hang {
+            cfg = cfg.env("MOCK_ACP_HANG", "1");
+        }
+        agent_client_protocol::AcpAgent::new(cfg)
+    }
+
     /// Poll the run buffer until a terminal update appears (or timeout).
     async fn wait_terminal(core: &RunCore, run_id: &str) -> Vec<RunUpdate> {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -1594,5 +1615,121 @@ mod tests {
             !agent_runs::is_card_locked(&conn, "card-1"),
             "card lock must release"
         );
+    }
+
+    /// Hard-kill verification: mock agent hangs on session/prompt (ignores
+    /// `session/cancel`), but the SDK's `ChildGuard` SIGKILL's the process
+    /// group when the connection drops. This test proves the child process
+    /// is actually dead after cancel — not just cooperatively asked to stop.
+    #[tokio::test]
+    async fn cancel_hard_kills_ignoring_agent_process() {
+        let db_path = temp_file_db();
+        let repo = temp_git_repo();
+        let core = RunCore::new();
+        let pid_file = std::env::temp_dir().join(format!(
+            "tasker-mock-pid-{}.txt",
+            uuid::Uuid::new_v4()
+        ));
+        {
+            let conn = open_db_path(&db_path).unwrap();
+            insert_test_card(&conn, "card-hk", Some(repo.to_str().unwrap()));
+            agents::insert_agent(
+                &conn,
+                "tester",
+                "echo hi",
+                "Test",
+                false,
+                true,
+                &[],
+            )
+            .unwrap();
+            agent_runs::insert_run(
+                &conn,
+                "run-hk",
+                "card-hk",
+                "tester",
+                "/tmp/pending",
+                "agent/pending",
+                "pending",
+                &[],
+            )
+            .unwrap();
+        }
+        let _ = core
+            .create_run(
+                "run-hk".into(),
+                "card-hk".into(),
+                repo.to_string_lossy().into_owned(),
+                "do the thing".into(),
+                mock_acp_agent_with_pid(true, pid_file.to_str().unwrap()),
+                db_path.clone(),
+            )
+            .await
+            .expect("create_run should succeed");
+
+        // Wait for the mock to write its PID (spawned + started reading).
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if pid_file.exists() {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "mock never wrote PID");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let pid: u32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+
+        // Wait for session to be established so cancel races a live session.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let has_session = {
+                let buf = core.buffers.lock().await;
+                buf.get("run-hk")
+                    .map(|b| {
+                        b.updates
+                            .iter()
+                            .any(|u| matches!(u, RunUpdate::SessionId { .. }))
+                    })
+                    .unwrap_or(false)
+            };
+            if has_session {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "session never established");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        // Process must be alive before cancel.
+        assert!(process_is_alive(pid), "mock should be alive before cancel");
+
+        core.cancel_run("run-hk").await;
+
+        // SDK grace is 1s; the process should be dead shortly after cancel
+        // returns. Poll up to 10s to account for scheduling overhead.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if !process_is_alive(pid) {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "mock process {pid} still alive after cancel — SDK ChildGuard did not kill it"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        let _ = std::fs::remove_file(&pid_file);
+    }
+
+    /// Check if a process is alive by sending signal 0 via `kill -0`.
+    fn process_is_alive(pid: u32) -> bool {
+        std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 }
