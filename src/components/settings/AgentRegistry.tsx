@@ -4,6 +4,7 @@ import type { Agent, SkillManifest } from '../../db.ts';
 import {
   acpListAgents,
   acpListSkills,
+  acpListActiveRuns,
   acpRegisterAgent,
   acpUpdateAgent,
   acpDeleteAgent,
@@ -19,6 +20,7 @@ const INPUT =
 export default function AgentRegistry() {
   const [agents, setAgents] = createSignal<Agent[]>([]);
   const [skills, setSkills] = createSignal<SkillManifest[]>([]);
+  const [activeByAgent, setActiveByAgent] = createSignal<Record<string, number>>({});
   const [editing, setEditing] = createSignal<Agent | null>(null);
   const [name, setName] = createSignal('');
   const [command, setCommand] = createSignal('');
@@ -28,8 +30,16 @@ export default function AgentRegistry() {
 
   async function refresh() {
     try {
-      setAgents(await acpListAgents());
-      setSkills(await acpListSkills());
+      const [agentList, skillList, active] = await Promise.all([
+        acpListAgents(),
+        acpListSkills(),
+        acpListActiveRuns(),
+      ]);
+      setAgents(agentList);
+      setSkills(skillList);
+      const counts: Record<string, number> = {};
+      for (const r of active) counts[r.agentName] = (counts[r.agentName] ?? 0) + 1;
+      setActiveByAgent(counts);
     } catch (e) {
       toaster.error({ title: 'Failed to load agents', description: acpErrorMessage(e) });
     }
@@ -145,6 +155,11 @@ export default function AgentRegistry() {
                         built-in
                       </span>
                     )}
+                    <Show when={(activeByAgent()[agent.name] ?? 0) > 0}>
+                      <span class="text-[10px] font-semibold text-p-high bg-p-high/10 rounded px-1 py-0.5 ml-1">
+                        {activeByAgent()[agent.name]} running
+                      </span>
+                    </Show>
                     <Show when={agent.description}>
                       <p class="text-xs text-ink-secondary truncate">{agent.description}</p>
                     </Show>
