@@ -171,7 +171,7 @@ impl KansoloMcp {
             .prepare(
                 r#"SELECT id, title, description, priority, "column", source, position,
                           source_ref, source_status,
-                          tree_source_id, repo_path, created_at, updated_at
+                          tree_source_id, repo_path, source_instance_id, created_at, updated_at
                    FROM cards
                    ORDER BY "column", position ASC"#,
             )
@@ -190,8 +190,9 @@ impl KansoloMcp {
                     source_status: r.get(8)?,
                     tree_source_id: r.get(9)?,
                     repo_path: r.get(10)?,
-                    created_at: r.get(11)?,
-                    updated_at: r.get(12)?,
+                    source_instance_id: r.get(11)?,
+                    created_at: r.get(12)?,
+                    updated_at: r.get(13)?,
                 })
             })
             .map_err(|e| McpError::internal_error("db_query_failed", Some(serde_json::json!({ "error": e.to_string() }))))?;
@@ -225,7 +226,7 @@ impl KansoloMcp {
             .query_row(
                 r#"SELECT id, title, description, priority, "column", source, position,
                           source_ref, source_status,
-                          tree_source_id, repo_path, created_at, updated_at
+                          tree_source_id, repo_path, source_instance_id, created_at, updated_at
                    FROM cards WHERE id = ?1"#,
                 [&id],
                 |r| {
@@ -241,8 +242,9 @@ impl KansoloMcp {
                         source_status: r.get(8)?,
                         tree_source_id: r.get(9)?,
                         repo_path: r.get(10)?,
-                        created_at: r.get(11)?,
-                        updated_at: r.get(12)?,
+                        source_instance_id: r.get(11)?,
+                        created_at: r.get(12)?,
+                        updated_at: r.get(13)?,
                     })
                 },
             );

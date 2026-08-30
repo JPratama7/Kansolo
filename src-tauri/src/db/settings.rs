@@ -80,32 +80,33 @@ pub async fn save_settings(
     Ok(())
 }
 
-/// Read the last-synced snapshot for a `(source, source_ref)` pair, if any.
-/// Uses the generalized `external_snapshots` table.
+/// Read the last-synced snapshot for a `(source_instance_id, source_ref)`
+/// pair, if any. Uses the generalized `external_snapshots` table.
 #[tauri::command]
 pub async fn get_snapshot(
     app: AppHandle,
-    source: String,
+    source_instance_id: String,
     source_ref: String,
 ) -> Result<Option<ExternalSnapshot>, String> {
     let conn = open_db(&app)?;
     conn.query_row(
-        r#"SELECT source, source_ref, title, description, priority, source_status, "column", synced_at
-           FROM external_snapshots WHERE source = ?1 AND source_ref = ?2 LIMIT 1"#,
-        params![source, source_ref],
+        r#"SELECT source_instance_id, source, source_ref, title, description, priority, source_status, "column", synced_at
+           FROM external_snapshots WHERE source_instance_id = ?1 AND source_ref = ?2 LIMIT 1"#,
+        params![source_instance_id, source_ref],
         |row| {
             Ok(ExternalSnapshot {
-                source: row.get(0)?,
-                source_ref: row.get(1)?,
-                title: row.get(2)?,
-                description: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+                source_instance_id: row.get(0)?,
+                source: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                source_ref: row.get(2)?,
+                title: row.get(3)?,
+                description: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
                 priority: row
-                    .get::<_, Option<String>>(4)?
+                    .get::<_, Option<String>>(5)?
                     .filter(|p| !p.is_empty())
                     .unwrap_or_else(|| "medium".to_string()),
-                source_status: row.get::<_, Option<String>>(5)?.unwrap_or_default(),
-                column: row.get(6)?,
-                synced_at: row.get(7)?,
+                source_status: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
+                column: row.get(7)?,
+                synced_at: row.get(8)?,
             })
         },
     )
@@ -116,19 +117,20 @@ pub async fn get_snapshot(
     })
 }
 
-/// Upsert the snapshot row for a `(source, source_ref)` pair — the external
-/// state at this sync instant. Mirrors src/db.ts lines 218-235.
+/// Upsert the snapshot row for a `(source_instance_id, source_ref)` pair —
+/// the external state at this sync instant. Mirrors src/db.ts lines 218-235.
 #[tauri::command]
 pub async fn save_snapshot(app: AppHandle, snap: ExternalSnapshot) -> Result<(), String> {
     let conn = open_db(&app)?;
     conn.execute(
         r#"INSERT INTO external_snapshots
-             (source, source_ref, title, description, priority, source_status, "column", synced_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-           ON CONFLICT(source, source_ref) DO UPDATE SET
-             title = ?3, description = ?4, priority = ?5, source_status = ?6,
-             "column" = ?7, synced_at = ?8"#,
+             (source_instance_id, source, source_ref, title, description, priority, source_status, "column", synced_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+           ON CONFLICT(source_instance_id, source_ref) DO UPDATE SET
+             source = ?2, title = ?4, description = ?5, priority = ?6, source_status = ?7,
+             "column" = ?8, synced_at = ?9"#,
         params![
+            snap.source_instance_id,
             snap.source,
             snap.source_ref,
             snap.title,

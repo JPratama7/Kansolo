@@ -143,7 +143,12 @@ use crate::sync::{apply_resolution, plan_sync, snapshot_from_card, Choice, SyncD
 /// status→column and priority mappings. Returns the card plus `false` when
 /// the upstream status isn't covered by the mapping (so the caller can
 /// collect it into `unmapped_statuses`).
-fn map_raw_card(raw: &RawCard, source_type: &str, mapping: &StatusMapping) -> (Card, bool) {
+fn map_raw_card(
+    raw: &RawCard,
+    source_id: &str,
+    source_type: &str,
+    mapping: &StatusMapping,
+) -> (Card, bool) {
     let column = resolve_column(&raw.status_name, mapping).to_string();
     let priority = resolve_priority(raw.priority_name.as_deref()).to_string();
     let mapped = is_status_mapped(&raw.status_name, mapping);
@@ -160,6 +165,7 @@ fn map_raw_card(raw: &RawCard, source_type: &str, mapping: &StatusMapping) -> (C
         source_status: Some(raw.status_name.clone()),
         tree_source_id: None,
         repo_path: None,
+        source_instance_id: Some(source_id.to_string()),
         created_at: now.clone(),
         updated_at: now,
     };
@@ -196,7 +202,7 @@ pub async fn fetch_source_cards(
     let mut cards = Vec::with_capacity(raw_cards.len());
     let mut unmapped: HashSet<String> = HashSet::new();
     for raw in &raw_cards {
-        let (card, mapped) = map_raw_card(raw, source_type, &instance.status_mapping);
+        let (card, mapped) = map_raw_card(raw, &source_id, source_type, &instance.status_mapping);
         if !mapped {
             unmapped.insert(raw.status_name.clone());
         }
@@ -287,21 +293,21 @@ pub async fn sync_source_inner(
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     for raw in &raw_cards {
-        let (remote, mapped) = map_raw_card(raw, source_type, status_mapping);
+        let (remote, mapped) = map_raw_card(raw, source_id, source_type, status_mapping);
         if !mapped {
             unmapped.insert(raw.status_name.clone());
         }
 
         let source_ref = raw.source_ref.clone();
         let local = get_card_by_source_ref_inner(&tx, source_type, &source_ref)?;
-        let snapshot = get_snapshot_inner(&tx, source_type, &source_ref)?;
+        let snapshot = get_snapshot_inner(&tx, source_id, &source_ref)?;
 
         let decision = plan_sync(&remote, local.as_ref(), snapshot.as_ref());
         match decision.decision_type {
             SyncDecisionType::Create | SyncDecisionType::Update => {
                 if let Some(card) = decision.card {
                     upsert_card_from_sync_inner(&tx, &card)?;
-                    let snap = snapshot_from_card(&card, source_type, &synced_at);
+                    let snap = snapshot_from_card(&card, source_id, source_type, &synced_at);
                     save_snapshot_inner(&tx, &snap)?;
                     imported += 1;
                 }
@@ -380,7 +386,7 @@ pub async fn resolve_conflicts(
 
         let resolved = apply_resolution(&conflict.card, &conflict.conflicts, &choices);
         upsert_card_from_sync(app.clone(), resolved.clone()).await?;
-        let snap = snapshot_from_card(&resolved, &source_type, &now);
+        let snap = snapshot_from_card(&resolved, &source_id, &source_type, &now);
         save_snapshot(app.clone(), snap).await?;
 
         conn.execute(
@@ -455,9 +461,20 @@ mod tests {
         conn.query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
+    /// Insert a sources row so cards/snapshots FK on source_instance_id
+    /// resolves (migration 0013 enforces the FK with foreign_keys ON).
+    fn seed_source(conn: &rusqlite::Connection, id: &str, source_type: &str) {
+        conn.execute(
+            "INSERT INTO sources (id, source_type, label, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![id, source_type, source_type, "2026-01-01T00:00:00Z"],
+        )
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn happy_path_persists_cards_and_snapshots() {
         let mut conn = test_db();
+        seed_source(&conn, "src-1", "test");
         let provider = FakeProvider {
             cards: vec![raw("PROJ-1", "First", "To Do"), raw("PROJ-2", "Second", "Done")],
             fail: false,
@@ -486,6 +503,7 @@ mod tests {
     #[tokio::test]
     async fn mid_loop_failure_rolls_back_transaction() {
         let mut conn = test_db();
+        seed_source(&conn, "src-1", "test");
         // Pre-insert a card whose id collides with the id `map_raw_card` will
         // build for PROJ-2 (`{source_type}-{source_ref}` = "test-PROJ-2"), but
         // with a different source_ref so the upsert takes the INSERT path and
@@ -538,6 +556,7 @@ mod tests {
     #[tokio::test]
     async fn fetch_failure_persists_nothing() {
         let mut conn = test_db();
+        seed_source(&conn, "src-1", "test");
         let provider = FakeProvider {
             cards: vec![raw("PROJ-1", "First", "To Do")],
             fail: true,

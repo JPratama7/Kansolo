@@ -18,13 +18,14 @@ fn row_to_card_row(row: &rusqlite::Row) -> rusqlite::Result<CardRow> {
         source_status: row.get("source_status")?,
         tree_source_id: row.get("tree_source_id")?,
         repo_path: row.get("repo_path")?,
+        source_instance_id: row.get("source_instance_id")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
 }
 
 /// Canonical column list for SELECTs — uses the generalized columns.
-const CARD_COLUMNS: &str = r#"id, title, description, priority, "column", source, position, source_ref, source_status, tree_source_id, repo_path, created_at, updated_at"#;
+const CARD_COLUMNS: &str = r#"id, title, description, priority, "column", source, position, source_ref, source_status, tree_source_id, repo_path, source_instance_id, created_at, updated_at"#;
 
 /// SELECT all cards ordered by column then position.
 #[tauri::command]
@@ -105,6 +106,7 @@ pub async fn create_local_card(app: AppHandle, title: String, column: String) ->
         source_status: None,
         tree_source_id: None,
         repo_path: None,
+        source_instance_id: None,
         created_at: now.clone(),
         updated_at: now,
     })
@@ -213,31 +215,38 @@ pub async fn is_card_locked_cmd(app: AppHandle, id: String) -> Result<bool, Stri
     Ok(crate::db::agent_runs::is_card_locked(&conn, &id))
 }
 
-/// Atomically remove every card sourced from a source instance (looked up by
-/// its `sources.id`) and its sync snapshots. Wraps both deletes in a single
+/// Atomically remove every card + snapshot belonging to a source instance
+/// (looked up by its `sources.id`). Wraps both deletes in a single
 /// transaction so a crash between them can't leave orphaned snapshots
 /// referencing deleted cards (fixes the TS non-atomicity bug).
 ///
-/// The `cards`/`external_snapshots` tables key off the source *type* string
-/// (e.g. "jira"), not the instance id — there is no `source_id` FK column — so
-/// we resolve the instance id → source_type inside the same transaction and
-/// delete by type. The frontend caller passes the selected source instance id.
+/// Both `cards.source_instance_id` and `external_snapshots.source_instance_id`
+/// are FKs to `sources.id`, so the delete is instance-scoped: clearing
+/// instance A leaves instance B's cards + snapshots untouched even when both
+/// share the same source *type*. Local cards (source = 'local') are never
+/// touched. The frontend caller passes the selected source instance id.
 #[tauri::command]
 pub async fn delete_all_source_cards(app: AppHandle, source_id: String) -> Result<(), String> {
     let mut conn = open_db(&app)?;
+    delete_all_source_cards_inner(&mut conn, &source_id)
+}
+
+/// Instance-scoped clear: delete every card + snapshot whose
+/// `source_instance_id` matches `source_id`, in one transaction. Inner helper
+/// so the SQL contract is unit-testable without an `AppHandle`.
+pub fn delete_all_source_cards_inner(
+    conn: &mut rusqlite::Connection,
+    source_id: &str,
+) -> Result<(), String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let source_type: String = tx
-        .query_row(
-            "SELECT source_type FROM sources WHERE id = ?1",
-            rusqlite::params![source_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM cards WHERE source = ?1", rusqlite::params![source_type])
-        .map_err(|e| e.to_string())?;
     tx.execute(
-        "DELETE FROM external_snapshots WHERE source = ?1",
-        rusqlite::params![source_type],
+        "DELETE FROM cards WHERE source_instance_id = ?1",
+        rusqlite::params![source_id],
+    )
+    .map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM external_snapshots WHERE source_instance_id = ?1",
+        rusqlite::params![source_id],
     )
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -332,11 +341,13 @@ pub fn upsert_card_from_sync_inner(
 
     if existing.is_some() {
         // Preserve id + position; refresh mutable fields from the remote.
+        // source_instance_id is refreshed too so a card created before the
+        // instance-FK migration gets linked on its next sync.
         conn.execute(
             r#"UPDATE cards SET
                  title = ?1, description = ?2, priority = ?3, source_status = ?4,
-                 "column" = ?5, updated_at = ?6
-               WHERE source = ?7 AND source_ref = ?8"#,
+                 "column" = ?5, updated_at = ?6, source_instance_id = ?7
+               WHERE source = ?8 AND source_ref = ?9"#,
             rusqlite::params![
                 card.title,
                 card.description,
@@ -344,6 +355,7 @@ pub fn upsert_card_from_sync_inner(
                 card.source_status,
                 card.column,
                 card.updated_at,
+                card.source_instance_id,
                 card.source,
                 source_ref,
             ],
@@ -353,8 +365,8 @@ pub fn upsert_card_from_sync_inner(
         let position = max_position(conn, &card.column)? + 1;
         conn.execute(
             r#"INSERT INTO cards
-                 (id, title, description, priority, "column", source, position, source_ref, source_status, created_at, updated_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"#,
+                 (id, title, description, priority, "column", source, position, source_ref, source_status, source_instance_id, created_at, updated_at)
+               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"#,
             rusqlite::params![
                 card.id,
                 card.title,
@@ -365,6 +377,7 @@ pub fn upsert_card_from_sync_inner(
                 position,
                 source_ref,
                 card.source_status,
+                card.source_instance_id,
                 card.created_at,
                 card.updated_at,
             ],
@@ -403,5 +416,108 @@ mod column_guard_tests {
     fn move_card_column_guard_rejects_invalid() {
         let err = validate_column("archived").unwrap_err();
         assert_eq!(err, "column must be backlog, ongoing, or done");
+    }
+}
+
+#[cfg(test)]
+mod source_instance_tests {
+    use super::delete_all_source_cards_inner;
+    use crate::db::test_db;
+
+    fn seed_source(conn: &rusqlite::Connection, id: &str, source_type: &str) {
+        conn.execute(
+            "INSERT INTO sources (id, source_type, label, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![id, source_type, source_type, "2026-01-01T00:00:00Z"],
+        )
+        .unwrap();
+    }
+
+    fn insert_card(
+        conn: &rusqlite::Connection,
+        id: &str,
+        source: &str,
+        source_ref: &str,
+        instance: &str,
+    ) {
+        conn.execute(
+            r#"INSERT INTO cards (id, title, "column", source, position, source_ref, source_instance_id, created_at, updated_at)
+               VALUES (?1, ?2, 'backlog', ?3, 0, ?4, ?5, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
+            rusqlite::params![id, id, source, source_ref, instance],
+        )
+        .unwrap();
+    }
+
+    fn insert_snapshot(conn: &rusqlite::Connection, instance: &str, source_ref: &str) {
+        conn.execute(
+            r#"INSERT INTO external_snapshots (source_instance_id, source, source_ref, title, synced_at)
+               VALUES (?1, 'test', ?2, 't', '2026-01-01T00:00:00Z')"#,
+            rusqlite::params![instance, source_ref],
+        )
+        .unwrap();
+    }
+
+    fn count(conn: &rusqlite::Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn delete_clears_only_the_named_instance() {
+        let mut conn = test_db();
+        seed_source(&conn, "src-a", "test");
+        seed_source(&conn, "src-b", "test");
+        insert_card(&conn, "test-A1", "test", "A-1", "src-a");
+        insert_card(&conn, "test-B1", "test", "B-1", "src-b");
+        insert_snapshot(&conn, "src-a", "A-1");
+        insert_snapshot(&conn, "src-b", "B-1");
+
+        delete_all_source_cards_inner(&mut conn, "src-a").unwrap();
+
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM cards WHERE source_instance_id = 'src-a'"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM cards WHERE source_instance_id = 'src-b'"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM external_snapshots WHERE source_instance_id = 'src-a'"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM external_snapshots WHERE source_instance_id = 'src-b'"), 1);
+    }
+
+    #[test]
+    fn delete_leaves_local_cards_untouched() {
+        let mut conn = test_db();
+        seed_source(&conn, "src-a", "test");
+        insert_card(&conn, "test-A1", "test", "A-1", "src-a");
+        conn.execute(
+            r#"INSERT INTO cards (id, title, "column", source, position, created_at, updated_at)
+               VALUES ('local-1', 'mine', 'backlog', 'local', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
+            [],
+        )
+        .unwrap();
+
+        delete_all_source_cards_inner(&mut conn, "src-a").unwrap();
+
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM cards WHERE source = 'local'"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM cards WHERE source_instance_id = 'src-a'"), 0);
+    }
+
+    #[test]
+    fn card_fk_rejects_orphan_source_instance_id() {
+        let conn = test_db();
+        let result = conn.execute(
+            r#"INSERT INTO cards (id, title, "column", source, position, source_instance_id, created_at, updated_at)
+               VALUES (?1, ?2, 'backlog', 'test', 0, ?3, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
+            rusqlite::params!["c-1", "c-1", "no-such-instance"],
+        );
+        assert!(result.is_err(), "FK should reject insert with non-existent source_instance_id");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("FOREIGN KEY") || err.contains("foreign key") || err.contains("constraint"),
+            "error should mention FK constraint, got: {err}");
+    }
+
+    #[test]
+    fn snapshot_fk_rejects_orphan_source_instance_id() {
+        let conn = test_db();
+        let result = conn.execute(
+            r#"INSERT INTO external_snapshots (source_instance_id, source, source_ref, title, synced_at)
+               VALUES (?1, 'test', 'PROJ-1', 't', '2026-01-01T00:00:00Z')"#,
+            rusqlite::params!["no-such-instance"],
+        );
+        assert!(result.is_err(), "FK should reject snapshot insert with non-existent source_instance_id");
     }
 }
