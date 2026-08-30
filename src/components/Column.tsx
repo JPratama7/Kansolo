@@ -1,6 +1,7 @@
 import { For, Show, createSignal } from 'solid-js';
 import { createDroppable, useDragDropContext } from '@thisbeyond/solid-dnd';
 import type { ColumnId, KanbanCard, TreeSource } from '../types.ts';
+import { PRIORITIES } from '../types.ts';
 import type { AgentRun } from '../db.ts';
 import Card from './Card.tsx';
 
@@ -27,8 +28,6 @@ interface ColumnProps {
   /** Called when an agent badge is clicked. */
   onAgentBadgeClick?: (cardId: string) => void;
 }
-
-import { PRIORITIES } from '../types.ts';
 
 const COL_ACCENT: Record<ColumnId, string> = {
   backlog: 'bg-col-backlog',

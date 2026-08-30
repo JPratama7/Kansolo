@@ -7,8 +7,8 @@
 use serde::{Deserialize, Serialize};
 
 /// Kanban column contract shared with the TypeScript side (camelCase JSON).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct StatusMapping {
     pub backlog: Vec<String>,
     pub ongoing: Vec<String>,

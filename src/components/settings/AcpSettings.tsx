@@ -1,4 +1,4 @@
-import { Show, createEffect, createSignal } from 'solid-js';
+import { Show, createSignal, onCleanup, onMount } from 'solid-js';
 import { getAllSettings, setSetting } from '../../db.ts';
 
 const INPUT =
@@ -14,10 +14,11 @@ export default function AcpSettings() {
   const [permissionTimeout, setPermissionTimeout] = createSignal(300);
   const [pruneOrphans, setPruneOrphans] = createSignal(false);
   const [saved, setSaved] = createSignal(false);
+  let savedTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Load settings on mount — values come from getAllSettings in parent.
   // This component receives initial values via props-free signal init.
-  createEffect(() => {
+  onMount(() => {
     void (async () => {
       const s = await getAllSettings();
       setDefaultAgent(s['acp_default_agent'] ?? 'claude-code');
@@ -28,6 +29,11 @@ export default function AcpSettings() {
     })();
   });
 
+  // Clear the "Saved!" indicator timer on unmount so it can't fire after teardown.
+  onCleanup(() => {
+    if (savedTimer) clearTimeout(savedTimer);
+  });
+
   async function save() {
     try {
       await setSetting('acp_default_agent', defaultAgent());
@@ -36,7 +42,8 @@ export default function AcpSettings() {
       await setSetting('acp_permission_timeout', String(permissionTimeout()));
       await setSetting('acp_prune_orphans', pruneOrphans() ? 'true' : 'false');
       setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+      if (savedTimer) clearTimeout(savedTimer);
+      savedTimer = setTimeout(() => setSaved(false), 2000);
     } catch {
       // Non-fatal.
     }

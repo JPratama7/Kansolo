@@ -2,6 +2,7 @@
 mod editor;
 mod mcp;
 mod tray;
+pub mod cli;
 pub mod db;
 mod source;
 mod mapping;
@@ -10,14 +11,16 @@ pub mod runner;
 pub mod skills;
 mod worktree;
 pub mod error;
+#[cfg(test)]
+pub mod test_utils;
 
 use tauri::{Manager, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .manage(mcp::McpState::default())
+        .manage(runner::RunnerState::default())
         .on_window_event(|window, event| {
             // Intercept the close button: when `close_to_tray` is enabled (the
             // default), hide the window instead of letting the app quit. The
@@ -37,6 +40,12 @@ pub fn run() {
             // Run DB migrations before anything else touches the database.
             let conn = db::open_db(app.handle())?;
             db::run_migrations(&conn)?;
+            // Reap stale active runs left over from a crashed/killed tasker
+            // (fire-and-forget — best-effort, never blocks startup).
+            if let Err(e) = runner::cleanup_dangling(&conn) {
+                eprintln!("cleanup_dangling on startup failed: {e}");
+            }
+            drop(conn);
 
             // Install the system tray icon + menu.
             tray::install(app.handle())?;
@@ -62,7 +71,6 @@ pub fn run() {
             db::cards::is_card_locked_cmd,
             db::cards::delete_all_source_cards,
             db::cards::get_card_by_source_ref,
-            db::cards::upsert_card_from_sync,
             db::settings::get_setting,
             db::settings::set_setting,
             db::settings::get_all_settings,
@@ -96,9 +104,11 @@ pub fn run() {
             runner::acp_create_run,
             runner::acp_get_run,
             runner::acp_get_run_for_card,
+            runner::acp_latest_run_for_card,
             runner::acp_list_updates,
             runner::acp_has_updates,
             runner::acp_list_runs,
+            runner::acp_list_recent_runs,
             runner::acp_cleanup,
             runner::acp_cancel_run,
             runner::acp_respond_permission,
@@ -119,7 +129,9 @@ pub fn read_setting<R: tauri::Runtime>(app: &tauri::AppHandle<R>, key: &str) -> 
     if !db_path.exists() {
         return None;
     }
-    let conn = rusqlite::Connection::open(&db_path).ok()?;
+    // Use the shared opener so WAL + busy_timeout + FK pragmas are applied
+    // consistently with the rest of the app (avoids locked/FK-disabled reads).
+    let conn = db::open_db_path(&db_path).ok()?;
     conn.query_row(
         "SELECT value FROM settings WHERE key = ?1",
         [key],

@@ -45,7 +45,9 @@ export default function ClearSourceModal(props: ClearSourceModalProps) {
     setBusy(true);
     setError(null);
     try {
-      await deleteAllSourceCards(src.sourceType);
+      // Rust command takes the source instance id (`source_id`) and resolves
+      // it to the source_type inside one transaction.
+      await deleteAllSourceCards(src.id);
       await reload();
       props.onOpenChange(false);
       toaster.success({ title: 'Source cleared', description: src.label });
@@ -68,7 +70,14 @@ export default function ClearSourceModal(props: ClearSourceModalProps) {
       closeOnEscape
       closeOnInteractOutside
       aria-label="Clear source cards"
-      onOpenChange={(e) => props.onOpenChange(e.open)}
+      onOpenChange={(e) => {
+        // Reset the selection when the dialog closes so a reopen starts clean.
+        if (!e.open) {
+          setSelectedId(null);
+          setError(null);
+        }
+        props.onOpenChange(e.open);
+      }}
     >
       <Portal>
         <Dialog.Backdrop class="fixed inset-0 z-50 bg-black/50" />

@@ -87,10 +87,16 @@ pub fn build_jql(parts: &JqlParts) -> String {
 }
 
 /// Raw Jira Cloud search response (`GET /rest/api/3/search/jql`).
+///
+/// `nextPageToken` is present when more pages exist on Jira Cloud; pass it
+/// back as the `nextPageToken` query param to fetch the next slice. Older
+/// on-prem deployments omit it (single page).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SearchResponse {
     issues: Vec<Issue>,
+    #[serde(default)]
+    next_page_token: Option<String>,
 }
 
 /// Raw issue entry.
@@ -120,14 +126,15 @@ struct Priority {
     name: Option<String>,
 }
 
-/// Pure parsing path: JSON text in, normalized [`RawCard`]s out. No network
-/// needed — kept separate from [`JiraSource::fetch_raw`] so it's trivial to
-/// unit-test against fixtures.
-fn parse_search_response(body: &str) -> Result<Vec<RawCard>, String> {
+/// Pure parsing path: JSON text in, normalized [`RawCard`]s out plus the
+/// optional `nextPageToken` cursor. No network needed — kept separate from
+/// [`JiraSource::fetch_raw`] so it's trivial to unit-test against fixtures.
+fn parse_search_response(body: &str) -> Result<(Vec<RawCard>, Option<String>), String> {
     let response: SearchResponse =
         serde_json::from_str(body).map_err(|e| format!("Failed to parse Jira response: {e}"))?;
 
-    Ok(response
+    let next_page_token = response.next_page_token.filter(|t| !t.is_empty());
+    let cards = response
         .issues
         .into_iter()
         .map(|issue| {
@@ -144,7 +151,8 @@ fn parse_search_response(body: &str) -> Result<Vec<RawCard>, String> {
                 priority_name: issue.fields.priority.map(|p| p.name).flatten(),
             }
         })
-        .collect())
+        .collect();
+    Ok((cards, next_page_token))
 }
 
 /// Convert a Jira description field to Markdown text.
@@ -371,20 +379,27 @@ fn list_to_md(content: Option<&serde_json::Value>, ordered: bool, depth: usize) 
 }
 
 /// Build the `GET /rest/api/3/search/jql` URL. Tolerates a user-pasted
-/// scheme and trailing slash on `base_url`; percent-encodes the JQL.
-fn build_search_url(base_url: &str, jql: &str) -> String {
+/// scheme and trailing slash on `base_url`; percent-encodes the JQL. When
+/// `page_token` is `Some`, appends `&nextPageToken=...` to fetch the next
+/// page of results from Jira Cloud's cursor-paginated search endpoint.
+fn build_search_url(base_url: &str, jql: &str, page_token: Option<&str>) -> String {
     let trimmed = base_url.trim();
     // Tolerate users who paste a full URL with a scheme; strip it so we don't
-    // end up with `https://https://host`.
+    // end up with `https://https://host`. http:// is upgraded to https://.
     let without_scheme = trimmed
         .strip_prefix("https://")
         .or_else(|| trimmed.strip_prefix("http://"))
         .unwrap_or(trimmed);
     let host = without_scheme.strip_suffix('/').unwrap_or(without_scheme);
     let encoded_jql = urlencoding::encode(jql);
-    format!(
+    let mut url = format!(
         "https://{host}/rest/api/3/search/jql?jql={encoded_jql}&fields=summary,status,description,priority&maxResults=100"
-    )
+    );
+    if let Some(token) = page_token {
+        url.push_str("&nextPageToken=");
+        url.push_str(&urlencoding::encode(token));
+    }
+    url
 }
 
 /// Build the `GET /rest/api/3/project` URL. Same host normalization as
@@ -422,6 +437,45 @@ fn config_string(config: &serde_json::Value, field: &str) -> Result<String, Stri
         .ok_or_else(|| format!("`{field}` in Jira source config must be a string"))
 }
 
+/// Fetch one search page and parse it into `(cards, next_page_token)`. The
+/// full URL (including encoded JQL) is logged to stderr on transport failure
+/// but never surfaced to the caller — error messages stay free of the URL so
+/// credentials embedded in the query string can't leak through the UI.
+async fn fetch_search_page(
+    client: &reqwest::Client,
+    url: &str,
+    authorization: &str,
+) -> Result<(Vec<RawCard>, Option<String>), String> {
+    let response = client
+        .get(url)
+        .header(reqwest::header::ACCEPT, "application/json")
+        .header(reqwest::header::AUTHORIZATION, authorization)
+        .send()
+        .await
+        .map_err(|e| {
+            eprintln!("Jira search request to {url} failed: {e}");
+            format!("Could not reach the Jira server: {e}")
+        })?;
+
+    let status = response.status();
+    if !status.is_success() {
+        // Deliberately discard the body so credentials or tokens can never leak.
+        let hint = match status.as_u16() {
+            401 | 403 => "check your credentials and permissions.",
+            410 => "the Jira search endpoint was removed — update the app.",
+            _ => "see Jira API docs for this status code.",
+        };
+        return Err(format!("Jira API error {status}: {hint}"));
+    }
+
+    let body = response
+        .text()
+        .await
+        .map_err(|_| "Jira responded, but the body could not be read.".to_string())?;
+
+    parse_search_response(&body)
+}
+
 /// Jira Cloud source provider. Config comes via the `config` parameter on
 /// each method — the struct itself is stateless so a single shared instance
 /// can serve every Jira-backed [`SourceInstance`](crate::db::SourceInstance).
@@ -455,34 +509,28 @@ impl SourceProvider for JiraSource {
             );
         }
 
-        let url = build_search_url(&base_url, &jql);
         let authorization = basic_auth_header(&email, &token);
+        let client = reqwest::Client::new();
 
-        let response = reqwest::Client::new()
-            .get(&url)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .header(reqwest::header::AUTHORIZATION, authorization)
-            .send()
-            .await
-            .map_err(|e| format!("Could not reach the Jira server at {url}: {e}"))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            // Deliberately discard the body so credentials or tokens can never leak.
-            let hint = match status.as_u16() {
-                401 | 403 => "check your credentials and permissions.",
-                410 => "the Jira search endpoint was removed — update the app.",
-                _ => "see Jira API docs for this status code.",
-            };
-            return Err(format!("Jira API error {status}: {hint}"));
+        // Jira Cloud paginates search via an opaque `nextPageToken` cursor.
+        // Loop until a page returns no token, capping at 50 pages so a
+        // misbehaving server can't trap us in an endless cursor cycle. The
+        // cursor is threaded through `build_search_url` so the URL shape for
+        // each page is unit-testable without network.
+        const MAX_PAGES: usize = 50;
+        let mut all_cards: Vec<RawCard> = Vec::new();
+        let mut page_token: Option<String> = None;
+        for _ in 0..MAX_PAGES {
+            let url = build_search_url(&base_url, &jql, page_token.as_deref());
+            let (cards, next_token) =
+                fetch_search_page(&client, &url, &authorization).await?;
+            all_cards.extend(cards);
+            match next_token {
+                Some(t) => page_token = Some(t),
+                None => break,
+            }
         }
-
-        let body = response
-            .text()
-            .await
-            .map_err(|_| "Jira responded, but the body could not be read.".to_string())?;
-
-        parse_search_response(&body)
+        Ok(all_cards)
     }
 
     async fn fetch_options(
@@ -502,7 +550,10 @@ impl SourceProvider for JiraSource {
             .header(reqwest::header::AUTHORIZATION, authorization)
             .send()
             .await
-            .map_err(|e| format!("Could not reach the Jira server at {url}: {e}"))?;
+            .map_err(|e| {
+                eprintln!("Jira projects request to {url} failed: {e}");
+                format!("Could not reach the Jira server: {e}")
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -683,7 +734,9 @@ mod tests {
 
     #[test]
     fn parses_fixture_into_normalized_raw_cards() {
-        let cards = parse_search_response(FIXTURE).expect("fixture should parse");
+        let (cards, next_token) = parse_search_response(FIXTURE).expect("fixture should parse");
+        // FIXTURE has no nextPageToken → single page, cursor is None.
+        assert_eq!(next_token, None);
 
         assert_eq!(cards.len(), 2);
 
@@ -709,6 +762,7 @@ mod tests {
         let url = build_search_url(
             "  example.atlassian.net/  ",
             "project = DEMO AND status != \"Done\"",
+            None,
         );
         assert_eq!(
             url,
@@ -717,11 +771,11 @@ mod tests {
         // A user who pastes a full URL with a scheme must not produce a
         // double-scheme URL (`https://https://host`).
         assert_eq!(
-            build_search_url("https://example.atlassian.net", "project = DEMO"),
+            build_search_url("https://example.atlassian.net", "project = DEMO", None),
             "https://example.atlassian.net/rest/api/3/search/jql?jql=project%20%3D%20DEMO&fields=summary,status,description,priority&maxResults=100"
         );
         assert_eq!(
-            build_search_url("http://example.atlassian.net/", "project = DEMO"),
+            build_search_url("http://example.atlassian.net/", "project = DEMO", None),
             "https://example.atlassian.net/rest/api/3/search/jql?jql=project%20%3D%20DEMO&fields=summary,status,description,priority&maxResults=100"
         );
         let auth = basic_auth_header("user", "secret");
@@ -861,5 +915,50 @@ mod tests {
             ]
         });
         assert_eq!(adf_to_text(&doc), "after");
+    }
+
+    /// Jira Cloud signals more pages with an opaque `nextPageToken` cursor.
+    /// This synthesizes a two-issue page carrying a token, asserts the parser
+    /// surfaces the cursor alongside the cards, and verifies `build_search_url`
+    /// threads the cursor into the next page's URL (percent-encoded, since
+    /// tokens may contain characters that aren't URL-safe). An empty token
+    /// is treated as "no next page" so a misbehaving server can't loop us.
+    #[test]
+    fn parses_next_page_token_and_builds_cursor_url() {
+        let page = r#"{
+            "nextPageToken": "abc 123/==",
+            "issues": [
+                { "key": "PROJ-3", "fields": { "summary": "Third", "status": {} } },
+                { "key": "PROJ-4", "fields": { "summary": "Fourth", "status": {} } }
+            ]
+        }"#;
+        let (cards, next_token) =
+            parse_search_response(page).expect("next-page fixture should parse");
+        assert_eq!(cards.len(), 2);
+        assert_eq!(cards[0].source_ref, "PROJ-3");
+        assert_eq!(cards[1].source_ref, "PROJ-4");
+        assert_eq!(next_token.as_deref(), Some("abc 123/=="));
+
+        // The cursor is percent-encoded into the next page URL; the JQL and
+        // fields stay identical to the first page.
+        let next_url = build_search_url(
+            "example.atlassian.net",
+            "project = DEMO",
+            next_token.as_deref(),
+        );
+        assert_eq!(
+            next_url,
+            "https://example.atlassian.net/rest/api/3/search/jql?jql=project%20%3D%20DEMO&fields=summary,status,description,priority&maxResults=100&nextPageToken=abc%20123%2F%3D%3D"
+        );
+
+        // An empty nextPageToken is normalized to None — no extra page fetch.
+        let empty_token = r#"{
+            "nextPageToken": "",
+            "issues": [{ "key": "PROJ-5", "fields": { "summary": "Last", "status": {} } }]
+        }"#;
+        let (empty_cards, empty_next) =
+            parse_search_response(empty_token).expect("empty-token fixture should parse");
+        assert_eq!(empty_cards.len(), 1);
+        assert_eq!(empty_next, None);
     }
 }

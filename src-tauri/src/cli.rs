@@ -178,7 +178,10 @@ async fn cmd_run(args: &[String]) -> Result<i32, AcpError> {
         let repo_path = match card.repo_path.as_ref() {
             Some(p) if !p.is_empty() => p.clone(),
             _ => match card.tree_source_id.as_ref() {
-                Some(tid) => crate::db::settings::get_tree_source_path(&conn, tid)?,
+                Some(tid) => crate::db::settings::get_tree_source_path(&conn, tid)?
+                    .ok_or_else(|| AcpError::validation(format!(
+                        "Card '{card_id}' tree source '{tid}' no longer exists."
+                    )))?,
                 None => return Err(AcpError::validation(format!(
                     "Card '{card_id}' has no repo_path or tree_source_id set."
                 ))),
@@ -355,8 +358,8 @@ async fn cmd_status(args: &[String]) -> Result<i32, AcpError> {
     if let Some(card_id) = args.first() {
         let run = agent_runs::get_active_run(&conn, card_id)?
             .or_else(|| {
-                // Fall back to most recent run for the card.
-                agent_runs::list_recent(&conn, 100).ok()?.into_iter().find(|r| r.card_id == *card_id)
+                // Fall back to the most recent run for the card (any status).
+                agent_runs::get_latest_run_for_card(&conn, card_id).ok().flatten()
             });
         match run {
             Some(r) => { print_run(&r); Ok(0) }
@@ -440,7 +443,18 @@ async fn cmd_list(_args: &[String]) -> Result<i32, AcpError> {
 }
 
 fn truncate(s: &str, n: usize) -> String {
-    if s.len() <= n { s.to_string() } else { format!("{}…", &s[..n.saturating_sub(1)]) }
+    if s.chars().count() <= n {
+        return s.to_string();
+    }
+    // Slice on a char boundary: take n-1 chars, then append an ellipsis.
+    // `&s[..n]` would panic on multi-byte UTF-8 if n landed mid-codepoint.
+    let cut = s
+        .char_indices()
+        .take(n.saturating_sub(1))
+        .last()
+        .map(|(i, _)| &s[..i])
+        .unwrap_or(s);
+    format!("{cut}…")
 }
 
 /// `merge <card_id> [--yes] [--prune]` — print diff summary, prompt [y/N]

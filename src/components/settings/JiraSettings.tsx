@@ -1,8 +1,9 @@
-import { For, Show, createEffect, createSignal, onMount } from 'solid-js';
+import { For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
 import { invoke } from '@tauri-apps/api/core';
-import type { SourceInstance, StatusMapping } from '../../types.ts';
+import type { StatusMapping } from '../../types.ts';
 import { DEFAULT_STATUS_MAPPING } from '../../columns.ts';
 import { toaster } from '../ui/toaster.ts';
+import type { SourceSettingsProps } from './registry.ts';
 import {
   ASSIGNEE_MODE_OPTIONS,
   DEFAULT_JQL_PARTS,
@@ -23,10 +24,7 @@ interface JiraProject {
   name: string;
 }
 
-interface JiraSettingsProps {
-  instance: SourceInstance;
-  onSave: (config: Record<string, unknown>, statusMapping: StatusMapping) => Promise<void> | void;
-}
+interface JiraSettingsProps extends SourceSettingsProps {}
 
 /** Split a comma-separated status list: trim each entry, drop empties. */
 function splitStatuses(input: string): string[] {
@@ -36,18 +34,16 @@ function splitStatuses(input: string): string[] {
     .filter((s) => s.length > 0);
 }
 
-function isStringArray(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every((s) => typeof s === 'string');
-}
-
 /** Coerce a stored config value to a string; fall back to '' when absent. */
 function cfgString(config: Record<string, unknown>, key: string): string {
   const v = config[key];
   return typeof v === 'string' ? v : '';
 }
 
+/** Sentinel the backend substitutes for an existing-but-redacted token. */
+const REDACTED_TOKEN = '__REDACTED__';
+
 export default function JiraSettings(props: JiraSettingsProps) {
-  const safeProps = props || {} as JiraSettingsProps;
   const [baseUrl, setBaseUrl] = createSignal('');
   const [email, setEmail] = createSignal('');
   const [token, setToken] = createSignal('');
@@ -69,7 +65,7 @@ export default function JiraSettings(props: JiraSettingsProps) {
   }
 
   onMount(() => {
-    const cfg = safeProps.instance?.config ?? {};
+    const cfg = props.instance?.config ?? {};
     setBaseUrl(cfgString(cfg, 'base_url'));
     setEmail(cfgString(cfg, 'email'));
     setToken(cfgString(cfg, 'token'));
@@ -85,10 +81,16 @@ export default function JiraSettings(props: JiraSettingsProps) {
     const parts = parseJqlParts(partsStr);
     setJqlParts(parts);
     setStatusesText(parts.statuses.join(', '));
-    const mapping = safeProps.instance?.statusMapping ?? DEFAULT_STATUS_MAPPING;
+    const mapping = props.instance?.statusMapping ?? DEFAULT_STATUS_MAPPING;
     setBacklogStatuses(mapping.backlog.join(', '));
     setOngoingStatuses(mapping.ongoing.join(', '));
     setDoneStatuses(mapping.done.join(', '));
+  });
+
+  // Clear any in-flight debounce timer when the component unmounts so the
+  // async preview callback can't fire after teardown.
+  onCleanup(() => {
+    if (previewTimer) clearTimeout(previewTimer);
   });
 
   async function loadProjects() {
@@ -96,15 +98,10 @@ export default function JiraSettings(props: JiraSettingsProps) {
     setError(null);
     try {
       const result = await invoke<{ projects: JiraProject[] }>('fetch_source_options', {
-        sourceId: safeProps.instance?.id ?? '',
+        sourceId: props.instance?.id ?? '',
       });
       const list = result.projects;
-      if (isStringArray(list) || !Array.isArray(list)) {
-        // Defensive: backend may return a non-array shape; coerce to [].
-        setProjects([]);
-      } else {
-        setProjects(list as JiraProject[]);
-      }
+      setProjects(Array.isArray(list) ? list : []);
     } catch (e) {
       // Action-result error → toast (decision 8).
       toaster.error({
@@ -158,7 +155,9 @@ export default function JiraSettings(props: JiraSettingsProps) {
       done: splitStatuses(doneStatuses()),
     };
     const finalParts: JqlParts = { ...jqlParts(), statuses: splitStatuses(statusesText()) };
-    if (preview() === '') {
+    // Don't reject while a debounced preview request is still in flight —
+    // the empty preview may just be stale, not a real "no JQL" state.
+    if (!previewLoading() && preview() === '') {
       // Form validation → inline `<p role="alert">` (decision 8).
       setError('JQL is empty — set at least one field (e.g. project or assignee).');
       return;
@@ -166,13 +165,19 @@ export default function JiraSettings(props: JiraSettingsProps) {
     setError(null);
     setSaving(true);
     try {
+      // Backend returns a redacted token when one is already stored. Treat
+      // empty/redacted as "keep unchanged" so the saved config doesn't wipe
+      // the existing token.
+      const rawToken = token().trim();
       const config: Record<string, unknown> = {
         base_url: baseUrl().trim(),
         email: email().trim(),
-        token: token().trim(),
         jql_parts: finalParts,
       };
-      await safeProps.onSave?.(config, mapping);
+      if (rawToken !== '' && rawToken !== REDACTED_TOKEN) {
+        config.token = rawToken;
+      }
+      await props.onSave?.(config, mapping);
     } catch (e) {
       // Action-result error → toast (decision 8).
       toaster.error({
@@ -204,6 +209,7 @@ export default function JiraSettings(props: JiraSettingsProps) {
           onInput={(e) => setBaseUrl(e.currentTarget.value)}
           placeholder="your-domain.atlassian.net…"
         />
+        <p class="text-xs text-ink-secondary mt-1">http:// URLs are upgraded to https:// on save.</p>
       </div>
 
       <div>

@@ -18,8 +18,6 @@ pub struct AgentRun {
     pub output: Option<String>,
     pub stop_reason: Option<String>,
     pub error: Option<String>,
-    pub pid: Option<i64>,
-    pub pgid: Option<i64>,
     pub merged_at: Option<String>,
     pub skills: Vec<String>,
     pub created_at: String,
@@ -49,7 +47,7 @@ pub fn insert_run(
 pub fn get_active_run(conn: &Connection, card_id: &str) -> Result<Option<AgentRun>, AcpError> {
     let row = conn.query_row(
         "SELECT id, card_id, agent_name, session_id, worktree_path, branch, status,
-                output, stop_reason, error, pid, pgid, merged_at, skills_json, created_at, finished_at
+                output, stop_reason, error, merged_at, skills_json, created_at, finished_at
          FROM agent_runs WHERE card_id = ?1 AND status IN ('pending', 'running') LIMIT 1",
         params![card_id],
         row_to_run,
@@ -61,11 +59,43 @@ pub fn get_active_run(conn: &Connection, card_id: &str) -> Result<Option<AgentRu
     }
 }
 
+/// Get the most recent run for a card, regardless of status.
+pub fn get_latest_run_for_card(conn: &Connection, card_id: &str) -> Result<Option<AgentRun>, AcpError> {
+    let row = conn.query_row(
+        "SELECT id, card_id, agent_name, session_id, worktree_path, branch, status,
+                output, stop_reason, error, merged_at, skills_json, created_at, finished_at
+         FROM agent_runs WHERE card_id = ?1 ORDER BY created_at DESC LIMIT 1",
+        params![card_id],
+        row_to_run,
+    );
+    match row {
+        Ok(r) => Ok(Some(r)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(AcpError::internal(e.to_string())),
+    }
+}
+
+/// Update the worktree_path, branch, and status for a run (used after the
+/// worktree is created, to replace the placeholder values from insert_run).
+pub fn update_worktree_branch(
+    conn: &Connection,
+    id: &str,
+    worktree_path: &str,
+    branch: &str,
+    status: &str,
+) -> Result<(), AcpError> {
+    conn.execute(
+        "UPDATE agent_runs SET worktree_path = ?1, branch = ?2, status = ?3 WHERE id = ?4",
+        params![worktree_path, branch, status, id],
+    ).map_err(AcpError::internal)?;
+    Ok(())
+}
+
 /// Get a single run by id.
 pub fn get_run(conn: &Connection, id: &str) -> Result<Option<AgentRun>, AcpError> {
     let row = conn.query_row(
         "SELECT id, card_id, agent_name, session_id, worktree_path, branch, status,
-                output, stop_reason, error, pid, pgid, merged_at, skills_json, created_at, finished_at
+                output, stop_reason, error, merged_at, skills_json, created_at, finished_at
          FROM agent_runs WHERE id = ?1",
         params![id],
         row_to_run,
@@ -114,7 +144,7 @@ pub fn list_recent(conn: &Connection, limit: i64) -> Result<Vec<AgentRun>, AcpEr
     let mut stmt = conn
         .prepare(&format!(
             "SELECT id, card_id, agent_name, session_id, worktree_path, branch, status,
-                    output, stop_reason, error, pid, pgid, merged_at, skills_json, created_at, finished_at
+                    output, stop_reason, error, merged_at, skills_json, created_at, finished_at
              FROM agent_runs ORDER BY created_at DESC LIMIT ?1"
         ))
         .map_err(AcpError::internal)?;
@@ -135,11 +165,23 @@ pub fn is_card_locked(conn: &Connection, card_id: &str) -> bool {
     ).map(|v| v != 0).unwrap_or(false)
 }
 
+/// Count all runs for an agent (any status). Used by `acp_delete_agent`
+/// to decide between the structured `AgentHasRuns` error and a clean
+/// delete (or cascade when `delete_runs=true`).
+pub fn count_runs_for_agent(conn: &Connection, agent_name: &str) -> Result<i64, AcpError> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM agent_runs WHERE agent_name = ?1",
+        params![agent_name],
+        |r| r.get::<_, i64>(0),
+    )
+    .map_err(AcpError::internal)
+}
+
 fn list_runs_with_filter(conn: &Connection, filter: &str) -> Result<Vec<AgentRun>, AcpError> {
     let mut stmt = conn
         .prepare(&format!(
             "SELECT id, card_id, agent_name, session_id, worktree_path, branch, status,
-                    output, stop_reason, error, pid, pgid, merged_at, skills_json, created_at, finished_at
+                    output, stop_reason, error, merged_at, skills_json, created_at, finished_at
              FROM agent_runs WHERE {filter}"
         ))
         .map_err(AcpError::internal)?;
@@ -152,7 +194,7 @@ fn list_runs_with_filter(conn: &Connection, filter: &str) -> Result<Vec<AgentRun
 }
 
 fn row_to_run(r: &rusqlite::Row) -> rusqlite::Result<AgentRun> {
-    let skills_json: String = r.get(13)?;
+    let skills_json: String = r.get(11)?;
     Ok(AgentRun {
         id: r.get(0)?,
         card_id: r.get(1)?,
@@ -164,11 +206,9 @@ fn row_to_run(r: &rusqlite::Row) -> rusqlite::Result<AgentRun> {
         output: r.get(7)?,
         stop_reason: r.get(8)?,
         error: r.get(9)?,
-        pid: r.get(10)?,
-        pgid: r.get(11)?,
-        merged_at: r.get(12)?,
+        merged_at: r.get(10)?,
         skills: parse_skills_json(&skills_json),
-        created_at: r.get(14)?,
-        finished_at: r.get(15)?,
+        created_at: r.get(12)?,
+        finished_at: r.get(13)?,
     })
 }

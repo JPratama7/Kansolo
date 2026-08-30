@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js';
+import { For, Show, createEffect, createSignal, on, onCleanup } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import { Dialog } from '@ark-ui/solid/dialog';
 import { DiffView } from '@git-diff-view/solid';
@@ -11,10 +11,10 @@ import {
   acpDiffMain,
   acpMerge,
   acpRemoveWorktree,
-  acpRespondPermission,
+  acpPermissionTimeoutMs,
   acpErrorMessage,
 } from '../db.ts';
-import PermissionDialog from './PermissionDialog.tsx';
+import { enqueuePermission, dequeuePermission, permissionHeadSignal } from './PermissionDialog.tsx';
 
 export interface AgentRunPanelProps {
   open: boolean;
@@ -61,24 +61,59 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
   const [busy, setBusy] = createSignal(false);
   const [showDiff, setShowDiff] = createSignal(false);
   const [diffMode, setDiffMode] = createSignal<'split' | 'unified'>('unified');
-  // Permission dialog state.
-  const [permRequest, setPermRequest] = createSignal<{ requestId: string; description: string } | null>(null);
+  // Permission requests are pushed to the module-level FIFO queue in
+  // PermissionDialog.tsx; a single global dialog renders the queue head.
+  // The panel keeps no local permission state.
+
+  // Derived run identity + active flag, captured into their own signals so
+  // the poll effect depends on stable booleans/ids rather than the whole
+  // run object (which changes reference on every panelRun refresh).
+  const [runId, setRunId] = createSignal<string | null>(null);
+  const [hasActive, setHasActive] = createSignal(false);
 
   let pollTimer: ReturnType<typeof setInterval> | undefined;
   let updatesEl: HTMLDivElement | undefined;
+  // In-flight guard: prevents overlapping pollUpdates calls from
+  // double-appending the same updates when an interval fires before the
+  // previous fetch resolves.
+  let polling = false;
 
-  // Poll for updates while the run is active (pending/running).
+  // Mirror props.run identity/active into stable signals. Setting a signal
+  // to an equal value is a no-op for downstream effects, so a panelRun
+  // refresh with the same id+status does not retrigger the poll effect.
   createEffect(() => {
-    const run = props.run;
-    if (!props.open || !run) return;
-    const isActive = run.status === 'pending' || run.status === 'running';
-    if (isActive) {
-      pollTimer = setInterval(() => void pollUpdates(run.id), POLL_INTERVAL_MS);
-    }
+    setRunId(props.run?.id ?? null);
+    setHasActive(props.run?.status === 'pending' || props.run?.status === 'running');
+  });
+
+  // Reset the stream/diff/merge state when switching to a different run.
+  // `on` runs the effect whenever the id changes (including the first run).
+  createEffect(
+    on(
+      () => props.run?.id,
+      () => {
+        setUpdates([]);
+        setCursor(0);
+        setDiff(null);
+        setMergeResult(null);
+      },
+    ),
+  );
+
+  // Poll for updates while the run is active (pending/running). Depends on
+  // the stable hasActive/runId signals, not the whole run object.
+  createEffect(() => {
+    const id = runId();
+    const open = props.open;
+    const active = hasActive();
+    if (!open || !id || !active) return;
+    pollTimer = setInterval(() => void pollUpdates(id), POLL_INTERVAL_MS);
     onCleanup(() => clearInterval(pollTimer));
   });
 
   async function pollUpdates(runId: string) {
+    if (polling) return;
+    polling = true;
     try {
       const newUpdates = await acpListUpdates(runId, cursor());
       if (newUpdates.length > 0) {
@@ -86,26 +121,32 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
         setCursor((c) => c + newUpdates.length);
         // Auto-scroll to bottom.
         if (updatesEl) updatesEl.scrollTop = updatesEl.scrollHeight;
-        // Detect permission requests — show dialog for the latest one.
+        // Forward permission requests to the global FIFO queue. The single
+        // PermissionDialog (rendered at the App boundary) mediates the head.
         for (const u of newUpdates) {
-          if (u.type === 'permissionRequest' && !permRequest()) {
-            setPermRequest({ requestId: u.requestId, description: u.description });
+          if (u.type === 'permissionRequest') {
+            const timeoutMs = u.timeoutMs ?? (await acpPermissionTimeoutMs());
+            enqueuePermission({
+              runId,
+              requestId: u.requestId,
+              description: u.description,
+              timeoutMs,
+            });
+          } else if (u.type === 'permissionTimeout') {
+            // Rust auto-denied the oldest pending request (each permission
+            // starts its own timeout timer on receipt, so timeouts fire in
+            // enqueue order — i.e. the queue head). Drop the head so the
+            // next request reveals immediately, mirroring the dialog's own
+            // countdown dequeue.
+            const head = permissionHeadSignal();
+            if (head) dequeuePermission(head.requestId);
           }
         }
       }
     } catch {
       // Non-fatal — will retry on next poll.
-    }
-  }
-
-  async function handlePermissionResponse(approved: boolean) {
-    const req = permRequest();
-    if (!req) return;
-    setPermRequest(null);
-    try {
-      await acpRespondPermission(req.requestId, approved);
-    } catch (e) {
-      toaster.error({ title: 'Permission response failed', description: acpErrorMessage(e) });
+    } finally {
+      polling = false;
     }
   }
 
@@ -179,14 +220,7 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
     return s === 'completed' || s === 'failed' || s === 'cancelled';
   };
 
-  const skillsUsed = () => {
-    try {
-      const parsed = JSON.parse(props.run?.skillsJson ?? '[]');
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  };
+  const skillsUsed = () => props.run?.skills ?? [];
 
   return (
     <Dialog.Root
@@ -397,12 +431,6 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
           </Dialog.Content>
         </Dialog.Positioner>
       </Portal>
-      <PermissionDialog
-        open={permRequest() !== null}
-        description={permRequest()?.description ?? ''}
-        onApprove={() => void handlePermissionResponse(true)}
-        onDeny={() => void handlePermissionResponse(false)}
-      />
     </Dialog.Root>
   );
 }

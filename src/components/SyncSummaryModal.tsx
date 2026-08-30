@@ -60,7 +60,12 @@ export default function SyncSummaryModal(props: SyncSummaryModalProps) {
   });
 
   onMount(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') props.onClose(); };
+    const onKey = (e: KeyboardEvent) => {
+      // Bail if another handler already consumed this Escape (e.g. an open
+      // menu inside the modal) so we don't double-close.
+      if (e.defaultPrevented) return;
+      if (e.key === 'Escape') props.onClose();
+    };
     window.addEventListener('keydown', onKey);
     onCleanup(() => window.removeEventListener('keydown', onKey));
   });

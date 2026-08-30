@@ -71,6 +71,7 @@ pub async fn list_cards_by_column(app: AppHandle, column: String) -> Result<Vec<
 /// Create a new local card with a fresh UUID and a position at the end of its column.
 #[tauri::command]
 pub async fn create_local_card(app: AppHandle, title: String, column: String) -> Result<Card, String> {
+    crate::db::validate_column(&column)?;
     let conn = open_db(&app)?;
     let now = now_iso();
     let id = uuid::Uuid::new_v4().to_string();
@@ -182,6 +183,7 @@ pub async fn move_card(
     column: String,
     position: Option<i64>,
 ) -> Result<(), String> {
+    crate::db::validate_column(&column)?;
     let conn = open_db(&app)?;
     let final_pos = match position {
         Some(p) => p,
@@ -211,18 +213,31 @@ pub async fn is_card_locked_cmd(app: AppHandle, id: String) -> Result<bool, Stri
     Ok(crate::db::agent_runs::is_card_locked(&conn, &id))
 }
 
-/// Atomically remove every card sourced from `source` and its sync snapshots.
-/// Wraps both deletes in a single transaction so a crash between them can't
-/// leave orphaned snapshots referencing deleted cards (fixes the TS non-atomicity bug).
+/// Atomically remove every card sourced from a source instance (looked up by
+/// its `sources.id`) and its sync snapshots. Wraps both deletes in a single
+/// transaction so a crash between them can't leave orphaned snapshots
+/// referencing deleted cards (fixes the TS non-atomicity bug).
+///
+/// The `cards`/`external_snapshots` tables key off the source *type* string
+/// (e.g. "jira"), not the instance id — there is no `source_id` FK column — so
+/// we resolve the instance id → source_type inside the same transaction and
+/// delete by type. The frontend caller passes the selected source instance id.
 #[tauri::command]
-pub async fn delete_all_source_cards(app: AppHandle, source: String) -> Result<(), String> {
+pub async fn delete_all_source_cards(app: AppHandle, source_id: String) -> Result<(), String> {
     let mut conn = open_db(&app)?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM cards WHERE source = ?1", rusqlite::params![source])
+    let source_type: String = tx
+        .query_row(
+            "SELECT source_type FROM sources WHERE id = ?1",
+            rusqlite::params![source_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM cards WHERE source = ?1", rusqlite::params![source_type])
         .map_err(|e| e.to_string())?;
     tx.execute(
         "DELETE FROM external_snapshots WHERE source = ?1",
-        rusqlite::params![source],
+        rusqlite::params![source_type],
     )
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -230,13 +245,14 @@ pub async fn delete_all_source_cards(app: AppHandle, source: String) -> Result<(
 }
 
 /// Find the local card linked to a `(source, source_ref)` pair, if any.
-#[tauri::command]
-pub async fn get_card_by_source_ref(
-    app: AppHandle,
-    source: String,
-    source_ref: String,
+/// Inner helper that runs on a borrowed connection (works inside a
+/// `Transaction` via deref coercion) so `sync_source` can do all its
+/// reads/writes on one atomic transaction.
+pub fn get_card_by_source_ref_inner(
+    conn: &rusqlite::Connection,
+    source: &str,
+    source_ref: &str,
 ) -> Result<Option<Card>, String> {
-    let conn = open_db(&app)?;
     let mut stmt = conn
         .prepare(&format!(
             "SELECT {CARD_COLUMNS} FROM cards WHERE source = ?1 AND source_ref = ?2 LIMIT 1"
@@ -251,6 +267,18 @@ pub async fn get_card_by_source_ref(
     } else {
         Ok(None)
     }
+}
+
+/// Tauri command wrapper — opens a fresh connection and delegates to
+/// [`get_card_by_source_ref_inner`].
+#[tauri::command]
+pub async fn get_card_by_source_ref(
+    app: AppHandle,
+    source: String,
+    source_ref: String,
+) -> Result<Option<Card>, String> {
+    let conn = open_db(&app)?;
+    get_card_by_source_ref_inner(&conn, &source, &source_ref)
 }
 
 /// Fetch a card by id. Sync helper used by the ACP runner; returns
@@ -275,10 +303,19 @@ pub fn get_card_by_id(conn: &rusqlite::Connection, id: &str) -> Result<Option<Ca
 /// (lines 242-284): preserves the existing id and per-column position when
 /// updating; assigns a fresh end-of-column position when inserting.
 /// Writes only the generalized `source_ref`/`source_status` columns.
-#[tauri::command]
-pub async fn upsert_card_from_sync(app: AppHandle, card: Card) -> Result<(), String> {
-    let conn = open_db(&app)?;
-
+///
+/// `updated_at` is remote-authoritative: on both insert and update it is set
+/// from `card.updated_at` (the upstream snapshot timestamp), never from local
+/// clock time, so a sync never back-dates a card or clobbers the remote's
+/// notion of "last modified" with a local now() stamp.
+///
+/// Inner helper that runs on a borrowed connection (works inside a
+/// `Transaction` via deref coercion) so `sync_source` can do all its
+/// reads/writes on one atomic transaction.
+pub fn upsert_card_from_sync_inner(
+    conn: &rusqlite::Connection,
+    card: &Card,
+) -> Result<(), String> {
     let source_ref = card.source_ref.clone().unwrap_or_default();
     let existing: Option<String> = conn
         .query_row(
@@ -313,7 +350,7 @@ pub async fn upsert_card_from_sync(app: AppHandle, card: Card) -> Result<(), Str
         )
         .map_err(|e| e.to_string())?;
     } else {
-        let position = max_position(&conn, &card.column)? + 1;
+        let position = max_position(conn, &card.column)? + 1;
         conn.execute(
             r#"INSERT INTO cards
                  (id, title, description, priority, "column", source, position, source_ref, source_status, created_at, updated_at)
@@ -335,4 +372,36 @@ pub async fn upsert_card_from_sync(app: AppHandle, card: Card) -> Result<(), Str
         .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Tauri command wrapper — opens a fresh connection and delegates to
+/// [`upsert_card_from_sync_inner`]. Registered as a Tauri command for
+/// completeness; the lib.rs invoke_handler registration is owned by
+/// another node.
+#[tauri::command]
+pub async fn upsert_card_from_sync(app: AppHandle, card: Card) -> Result<(), String> {
+    let conn = open_db(&app)?;
+    upsert_card_from_sync_inner(&conn, &card)
+}
+
+#[cfg(test)]
+mod column_guard_tests {
+    use crate::db::validate_column;
+
+    // `create_local_card` and `move_card` are Tauri commands whose first line
+    // is `validate_column(&column)?`, so this guard is the contract those
+    // commands enforce before touching the DB. They require an AppHandle to
+    // drive end-to-end; the guard itself is pure and unit-tested here.
+
+    #[test]
+    fn create_local_card_column_guard_rejects_invalid() {
+        let err = validate_column("in_progress").unwrap_err();
+        assert_eq!(err, "column must be backlog, ongoing, or done");
+    }
+
+    #[test]
+    fn move_card_column_guard_rejects_invalid() {
+        let err = validate_column("archived").unwrap_err();
+        assert_eq!(err, "column must be backlog, ongoing, or done");
+    }
 }

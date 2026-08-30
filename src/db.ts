@@ -52,9 +52,11 @@ export async function isCardLocked(id: string): Promise<boolean> {
   return invoke<boolean>('is_card_locked_cmd', { id });
 }
 
-/** Remove every card sourced from `source` and its sync snapshots. Local cards stay. */
-export async function deleteAllSourceCards(source: string): Promise<void> {
-  await invoke('delete_all_source_cards', { source });
+/** Remove every card sourced from a source instance (looked up by its
+ * `sources.id`) and its sync snapshots. Local cards stay. The Rust command
+ * resolves the instance id → source_type inside one transaction. */
+export async function deleteAllSourceCards(sourceId: string): Promise<void> {
+  await invoke('delete_all_source_cards', { sourceId });
 }
 
 export async function listSources(): Promise<SourceInstance[]> {
@@ -198,12 +200,41 @@ export async function acpGetRunForCard(cardId: string): Promise<AgentRun | null>
   return invoke<AgentRun | null>('acp_get_run_for_card', { cardId });
 }
 
+/** Most recent run for a card, regardless of status (active or terminal).
+ * Used by the UI to render the latest run badge/panel when no active run exists. */
+export async function acpLatestRunForCard(cardId: string): Promise<AgentRun | null> {
+  return invoke<AgentRun | null>('acp_latest_run_for_card', { cardId });
+}
+
 export async function acpHasUpdates(runId: string): Promise<boolean> {
   return invoke<boolean>('acp_has_updates', { runId });
 }
 
 export async function acpListRuns(limit?: number): Promise<AgentRun[]> {
   return invoke<AgentRun[]>('acp_list_runs', { limit });
+}
+
+/** Recent runs (newest first), any status. Compact feed for UI status
+ * panels; the Rust side defaults to a 20-row limit when `limit` is unset. */
+export async function acpListRecentRuns(limit?: number): Promise<AgentRun[]> {
+  return invoke<AgentRun[]>('acp_list_recent_runs', { limit });
+}
+
+/** Resolve the per-permission auto-deny timeout (ms) from the
+ * `acp_permission_timeout` setting (seconds). Mirrors the Rust
+ * `read_permission_timeout` default of 300s. The value is cached after the
+ * first read so repeated enqueue calls don't re-query the DB. */
+let cachedPermissionTimeoutMs: number | null = null;
+export async function acpPermissionTimeoutMs(): Promise<number> {
+  if (cachedPermissionTimeoutMs !== null) return cachedPermissionTimeoutMs;
+  const raw = await getSetting('acp_permission_timeout');
+  let seconds = 300;
+  if (raw) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) seconds = parsed;
+  }
+  cachedPermissionTimeoutMs = seconds * 1000;
+  return cachedPermissionTimeoutMs;
 }
 
 export async function acpCleanup(): Promise<string[]> {

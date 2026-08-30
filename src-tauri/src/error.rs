@@ -9,6 +9,10 @@ pub enum AcpErrorCode {
     Locked,
     Validation,
     Conflict,
+    /// Delete blocked because the agent still has run rows. The agent
+    /// name is included in `message`; callers can also pass
+    /// `delete_runs=true` to cascade.
+    AgentHasRuns,
 }
 
 /// Typed error returned by all Tauri commands and CLI operations.
@@ -36,6 +40,17 @@ impl AcpError {
     }
     pub fn conflict(msg: impl ToString) -> Self {
         Self { code: AcpErrorCode::Conflict, message: msg.to_string() }
+    }
+    /// Delete blocked by existing runs. `name` is the agent name; the
+    /// caller should suggest `delete_runs=true` to cascade.
+    pub fn agent_has_runs(name: impl ToString) -> Self {
+        Self {
+            code: AcpErrorCode::AgentHasRuns,
+            message: format!(
+                "Cannot delete agent '{}': agent_runs still exist. Pass delete_runs=true to cascade.",
+                name.to_string()
+            ),
+        }
     }
 }
 
@@ -78,6 +93,7 @@ mod tests {
             (AcpErrorCode::Locked, "locked"),
             (AcpErrorCode::Validation, "validation"),
             (AcpErrorCode::Conflict, "conflict"),
+            (AcpErrorCode::AgentHasRuns, "agentHasRuns"),
         ] {
             let err = AcpError { code: code.clone(), message: "x".into() };
             let json = serde_json::to_string(&err).unwrap();

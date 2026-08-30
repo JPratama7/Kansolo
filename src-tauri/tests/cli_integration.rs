@@ -58,8 +58,6 @@ fn test_db() -> Connection {
              output TEXT,
              stop_reason TEXT,
              error TEXT,
-             pid INTEGER,
-             pgid INTEGER,
              merged_at TEXT,
              skills_json TEXT NOT NULL DEFAULT '[]',
              created_at TEXT NOT NULL,

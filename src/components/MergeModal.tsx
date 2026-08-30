@@ -1,4 +1,4 @@
-import { For, createSignal } from 'solid-js';
+import { For, createEffect, createSignal } from 'solid-js';
 import { Portal } from 'solid-js/web';
 import { Dialog } from '@ark-ui/solid/dialog';
 import type { ConflictResolution, SyncConflict } from '../types.ts';
@@ -25,6 +25,13 @@ const FIELD_LABELS: Record<string, string> = {
 export default function MergeModal(props: MergeModalProps) {
   // Per-field choice, keyed `${sourceRef}:${field}`.
   const [choices, setChoices] = createSignal<Choices>({});
+
+  // Reset per-field choices whenever the conflict set changes (e.g. a new
+  // sync surfaces a different set of cards) so stale picks don't bleed in.
+  createEffect(() => {
+    props.conflicts;
+    setChoices({});
+  });
 
   function choiceFor(ref: string, field: string): Choice {
     return choices()[`${ref}:${field}`] ?? 'local';

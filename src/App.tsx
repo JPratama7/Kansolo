@@ -5,6 +5,8 @@ import Settings from './components/Settings.tsx';
 import MergeModal from './components/MergeModal.tsx';
 import ClearSourceModal from './components/ClearSourceModal.tsx';
 import SyncSummaryModal, { type SyncSummaryEntry } from './components/SyncSummaryModal.tsx';
+import AgentManager from './components/AgentManager.tsx';
+import PermissionDialog from './components/PermissionDialog.tsx';
 import { toaster } from './components/ui/toaster.ts';
 import {
   getSetting,
@@ -14,10 +16,11 @@ import {
   syncSource,
   acpErrorMessage,
 } from './db.ts';
-import type { ConflictResolution, SyncConflict } from './types.ts';
+import type { ConflictResolution, SourceInstance, SyncConflict } from './types.ts';
 
 function App() {
   const [settingsVisible, setSettingsVisible] = createSignal(false);
+  const [managerVisible, setManagerVisible] = createSignal(false);
   const [clearVisible, setClearVisible] = createSignal(false);
   const [syncing, setSyncing] = createSignal(false);
   const [syncError, setSyncError] = createSignal<string | null>(null);
@@ -25,6 +28,15 @@ function App() {
   const [conflicts, setConflicts] = createSignal<SyncConflict[] | null>(null);
   // Source id whose sync produced the current conflicts; needed to resolve.
   const [pendingSourceId, setPendingSourceId] = createSignal<string | null>(null);
+  // Remaining enabled sources to sync after the current conflict batch is
+  // resolved. Kept in a signal so handleResolve can resume the paused loop.
+  const [pendingSources, setPendingSources] = createSignal<SourceInstance[]>([]);
+  // Unmapped-status accumulator + summary carried across the pause/resume.
+  const [pendingUnmatched, setPendingUnmatched] = createSignal<Set<string>>(new Set());
+  const [pendingSummary, setPendingSummary] = createSignal<SyncSummaryEntry[]>([]);
+  // syncedAt returned by syncSource for the conflicting source — passed to
+  // finishSync instead of a fresh local timestamp (the run already happened).
+  const [conflictSyncedAt, setConflictSyncedAt] = createSignal<string | null>(null);
   const [unmatchedStatuses, setUnmatchedStatuses] = createSignal<string[] | null>(null);
   const [syncSummary, setSyncSummary] = createSignal<SyncSummaryEntry[] | null>(null);
 
@@ -33,16 +45,49 @@ function App() {
   });
 
   /**
-   * Sync every enabled source in turn. The first source that surfaces
-   * conflicts pauses the loop — the user must resolve them before the run
-   * is considered complete. Unmapped statuses from all sources are surfaced
-   * together as a banner.
+   * Sync a contiguous batch of sources. The first source that surfaces
+   * conflicts pauses the batch: remaining sources are stashed in
+   * `pendingSources` for handleResolve to resume. Returns whether the
+   * batch completed and the latest syncedAt seen.
    */
+  async function syncBatch(
+    sources: SourceInstance[],
+    unmatched: Set<string>,
+    summary: SyncSummaryEntry[],
+    initialSyncedAt: string | null,
+  ): Promise<{ done: boolean; syncedAt: string | null }> {
+    let syncedAt = initialSyncedAt;
+    for (let i = 0; i < sources.length; i++) {
+      const s = sources[i];
+      const result = await syncSource(s.id);
+      summary.push({ label: s.label, sourceType: s.sourceType, count: result.importedCount });
+      for (const u of result.unmappedStatuses) unmatched.add(u);
+      if (result.conflicts.length > 0) {
+        // Stash state for resume, then surface conflicts to the user.
+        setPendingSources(sources.slice(i + 1));
+        setPendingUnmatched(unmatched);
+        setPendingSummary(summary);
+        setConflicts(result.conflicts);
+        setPendingSourceId(s.id);
+        setConflictSyncedAt(result.syncedAt);
+        setSyncSummary(summary);
+        if (unmatched.size > 0) setUnmatchedStatuses([...unmatched].sort());
+        return { done: false, syncedAt };
+      }
+      syncedAt = result.syncedAt;
+    }
+    return { done: true, syncedAt };
+  }
+
   async function handleSync() {
     setSyncing(true);
     setSyncError(null);
     setConflicts(null);
     setPendingSourceId(null);
+    setPendingSources([]);
+    setPendingUnmatched(new Set());
+    setPendingSummary([]);
+    setConflictSyncedAt(null);
     setUnmatchedStatuses(null);
     setSyncSummary(null);
     try {
@@ -50,23 +95,12 @@ function App() {
       const enabled = sources.filter((s) => s.enabled);
       const unmatched = new Set<string>();
       const summary: SyncSummaryEntry[] = [];
-      let lastSyncedAt: string | null = null;
-      for (const s of enabled) {
-        const result = await syncSource(s.id);
-        summary.push({ label: s.label, sourceType: s.sourceType, count: result.importedCount });
-        for (const u of result.unmappedStatuses) unmatched.add(u);
-        if (result.conflicts.length > 0) {
-          setConflicts(result.conflicts);
-          setPendingSourceId(s.id);
-          if (unmatched.size > 0) setUnmatchedStatuses([...unmatched].sort());
-          setSyncSummary(summary);
-          return; // wait for the user to resolve
-        }
-        lastSyncedAt = result.syncedAt;
+      const { done, syncedAt } = await syncBatch(enabled, unmatched, summary, null);
+      if (done) {
+        if (unmatched.size > 0) setUnmatchedStatuses([...unmatched].sort());
+        if (syncedAt) await finishSync(syncedAt);
+        setSyncSummary(summary);
       }
-      if (unmatched.size > 0) setUnmatchedStatuses([...unmatched].sort());
-      if (lastSyncedAt) await finishSync(lastSyncedAt);
-      setSyncSummary(summary);
     } catch (e) {
       setSyncError(acpErrorMessage(e));
     } finally {
@@ -74,7 +108,9 @@ function App() {
     }
   }
 
-  /** Apply per-card field resolutions, then finish the paused sync run. */
+  /** Apply per-card field resolutions, then resume the paused sync loop
+   * with the remaining enabled sources. Uses the conflicting source's
+   * syncedAt (captured when the loop paused) as the finish timestamp. */
   async function handleResolve(resolutions: ConflictResolution[]) {
     const sourceId = pendingSourceId();
     if (!sourceId) return;
@@ -82,9 +118,26 @@ function App() {
       await resolveConflicts(sourceId, resolutions);
       setConflicts(null);
       setPendingSourceId(null);
-      // Continue the run with the remaining enabled sources.
-      const syncedAt = new Date().toISOString();
-      await finishSync(syncedAt);
+      // Resume the paused loop with the stashed state.
+      const remaining = pendingSources();
+      const unmatched = pendingUnmatched();
+      const summary = pendingSummary();
+      const syncedAt = conflictSyncedAt();
+      setPendingSources([]);
+      setPendingUnmatched(new Set());
+      setPendingSummary([]);
+      setConflictSyncedAt(null);
+      const { done, syncedAt: finalSyncedAt } = await syncBatch(
+        remaining,
+        unmatched,
+        summary,
+        syncedAt,
+      );
+      if (done) {
+        if (unmatched.size > 0) setUnmatchedStatuses([...unmatched].sort());
+        if (finalSyncedAt) await finishSync(finalSyncedAt);
+        setSyncSummary(summary);
+      }
     } catch (e) {
       setSyncError(acpErrorMessage(e));
     } finally {
@@ -144,6 +197,13 @@ function App() {
           <button
             type="button"
             class="px-3 py-1.5 text-sm font-medium rounded bg-elevated hover:bg-hover text-ink transition-colors"
+            onClick={() => setManagerVisible(true)}
+          >
+            Agents
+          </button>
+          <button
+            type="button"
+            class="px-3 py-1.5 text-sm font-medium rounded bg-elevated hover:bg-hover text-ink transition-colors"
             onClick={() => setSettingsVisible(!settingsVisible())}
           >
             Settings
@@ -184,6 +244,13 @@ function App() {
         }}
       />
       <Board />
+      <AgentManager
+        open={managerVisible()}
+        onOpenChange={setManagerVisible}
+      />
+      {/* Single global permission dialog — renders the head of the
+          module-level FIFO queue fed by all run panels. */}
+      <PermissionDialog />
       <MergeModal
         conflicts={conflicts() ?? []}
         open={!!conflicts()}
@@ -191,6 +258,10 @@ function App() {
           if (!o) {
             setConflicts(null);
             setPendingSourceId(null);
+            setPendingSources([]);
+            setPendingUnmatched(new Set());
+            setPendingSummary([]);
+            setConflictSyncedAt(null);
             setSyncing(false);
           }
         }}
@@ -198,10 +269,14 @@ function App() {
         onCancel={() => {
           setConflicts(null);
           setPendingSourceId(null);
+          setPendingSources([]);
+          setPendingUnmatched(new Set());
+          setPendingSummary([]);
+          setConflictSyncedAt(null);
           setSyncing(false);
         }}
       />
-      <Show when={syncSummary() && !conflicts()}>
+      <Show when={syncSummary() !== null && !conflicts()}>
         <SyncSummaryModal
           entries={syncSummary()!}
           syncedAt={lastSynced() ?? undefined}
