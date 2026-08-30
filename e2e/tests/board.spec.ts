@@ -49,10 +49,13 @@ test.describe('Board drag-drop and keyboard move', () => {
     await expect(backlog.locator('[data-testid="card-card-1"]')).toBeVisible();
     await expect(done.locator('[data-testid="card-card-1"]')).toHaveCount(0);
 
-    // Drag the card into the Done column.
+    // Drag the card into the Done column. solid-dnd's pointer sensor has a
+    // 250ms activation delay (setTimeout(dragStart, 250)) — hold mouse down
+    // past that delay before moving, otherwise the drag never starts.
     const card = page.locator('[data-testid="card-card-1"]');
     await card.hover();
     await page.mouse.down();
+    await page.waitForTimeout(300);
     await done.hover();
     await page.mouse.up();
 
