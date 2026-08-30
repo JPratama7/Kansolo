@@ -230,10 +230,40 @@ export default function Board() {
   // Ark UI Menu machine. Controlled `open` so we can open programmatically
   // from Card's onContextMenu / Shift+F10 without a Menu.ContextTrigger
   // (decision 4: no asChild, no extra DOM node conflicting with use:draggable).
+  // `anchorPoint` is bound reactively so the machine auto-repositions when the
+  // cursor point changes (second right-click, Shift+F10 at card center). This
+  // replaces a manual `reposition()` effect that raced the machine's own
+  // CONTROLLED.OPEN reposition (which used the unset anchorPoint context and
+  // fell back to the default position).
   const menuOpen = createMemo(() => currentlyMenuingCard() !== null);
   const menu = useMenu({
     onOpenChange: (details) => {
-      if (!details.open) setCurrentlyMenuingCard(null);
+      if (!details.open) {
+        // Restore focus to the card that owned the menu. The menu is
+        // controlled + has no MenuTrigger, so Ark UI can't restore focus
+        // automatically — without this, Escape sends focus to <body>.
+        // Item-select handlers clear `currentlyMenuingCard` before this
+        // callback runs, so we only refocus on dismiss (Escape / outside
+        // click), not after selecting an item (where focus moves to the
+        // edit modal / etc).
+        const card = currentlyMenuingCard();
+        setCurrentlyMenuingCard(null);
+        if (card) {
+          queueMicrotask(() => {
+            document
+              .querySelector<HTMLElement>(`[data-testid="card-${card.id}"]`)
+              ?.focus();
+          });
+        }
+      }
+    },
+    onPointerDownOutside: (e) => {
+      // When the user right-clicks on a card while the menu is open,
+      // don't close the menu — the card's onContextMenu handler will
+      // update the anchor point and we reposition via the effect below.
+      if (e.detail.contextmenu) {
+        e.preventDefault();
+      }
     },
     positioning: { placement: 'bottom-start', gutter: 0 },
   });
@@ -246,6 +276,17 @@ export default function Board() {
   function openCardMenu(card: KanbanCard, point: { x: number; y: number }) {
     setMenuAnchorPoint(point);
     setCurrentlyMenuingCard(card);
+    // Reposition the menu at the new anchor point. On the first open, the
+    // machine's CONTROLLED.OPEN transition handles positioning. On a
+    // subsequent open (second right-click while menu is already open),
+    // the machine stays in "open" state and doesn't reposition — so we
+    // explicitly call reposition. Use setTimeout(0) to defer past the
+    // machine's own open-transition reposition (which would overwrite
+    // our position) and past any pending CLOSE microtasks from
+    // pointerdown-outside.
+    setTimeout(() => {
+      menu.api().reposition({ getAnchorRect: () => ({ width: 0, height: 0, ...point }) });
+    }, 0);
   }
 
   /** Guarded card-switch: if the current EditModal is dirty, show a
@@ -282,17 +323,8 @@ export default function Board() {
     setPendingSwitchToastId(id);
   }
 
-  // When the anchor point or target card changes while the menu is open,
-  // reposition the menu at the new point. This handles the second
-  // right-click case: the machine stays open (controlled), and we move it.
-  createEffect(() => {
-    const card = currentlyMenuingCard();
-    if (!card) return;
-    const point = menuAnchorPoint();
-    // Reposition uses anchorPoint from the event point; setting it via
-    // reposition() with getAnchorRect keeps the menu pinned to the cursor.
-    menu.api().reposition({ getAnchorRect: () => ({ width: 0, height: 0, ...point }) });
-  });
+  // Repositioning on second right-click is handled in `openCardMenu`
+  // above (setTimeout(0) reposition call). No separate effect needed.
 
   /** Fetch one column's cards from the database and splice them into the
    * central cards signal. When `withSkeletons` is true, sets the column's

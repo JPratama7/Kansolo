@@ -9,7 +9,8 @@
 //! (streaming `session/update` text chunks, then `end_turn`), and
 //! session/cancel. Env knobs: `MOCK_ACP_UPDATES` (chunks per prompt,
 //! default 1), `MOCK_ACP_HANG` (never answer session/prompt — for the
-//! cancel test).
+//! cancel test), `MOCK_ACP_PID_FILE` (write own PID to this path on start
+//! — for the hard-kill test).
 
 use std::io::{BufRead, Write};
 
@@ -20,6 +21,11 @@ pub fn run_mock_server() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
+    // Write own PID to a file so the hard-kill test can check the process
+    // is dead after cancel. Best-effort — ignore errors.
+    if let Ok(pid_file) = std::env::var("MOCK_ACP_PID_FILE") {
+        let _ = std::fs::write(&pid_file, std::process::id().to_string());
+    }
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     let mut session_id = "mock-session-1".to_string();
