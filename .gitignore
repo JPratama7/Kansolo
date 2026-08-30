@@ -9,3 +9,4 @@ src-tauri/foo.txt
 .plan/
 test-results/
 TODO.md
+.information/

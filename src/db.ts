@@ -125,3 +125,13 @@ export async function updateTreeSource(id: string, label: string, path: string, 
 export async function deleteTreeSource(id: string): Promise<void> {
   await invoke('delete_tree_source', { id });
 }
+
+/** Extract a human-readable message from a Tauri error. The Rust side
+ * returns typed `AcpError` values serialized as `{ code, message }`; plain
+ * string errors fall back to `String(e)`. */
+export function acpErrorMessage(e: unknown): string {
+  if (e && typeof e === 'object' && 'message' in e && typeof (e as { message: unknown }).message === 'string') {
+    return (e as { message: string }).message;
+  }
+  return e instanceof Error ? e.message : String(e);
+}
