@@ -97,16 +97,23 @@ test.describe('Card context menu', () => {
     await card.waitFor();
     const box = (await card.boundingBox())!;
 
-    // First right-click near the top of the card.
+    // First right-click near the top-left of the card.
     await page.mouse.click(box.x + 10, box.y + 10, { button: 'right' });
     const menu = page.locator('[data-testid="card-context-menu"]');
     await expect(menu).toBeVisible();
+    // Wait for the menu's position to settle (Ark UI uses deferred
+    // positioning via requestAnimationFrame).
+    await page.waitForTimeout(100);
     const box1 = (await menu.boundingBox())!;
 
-    // Second right-click near the bottom of the card. The menu should stay
-    // open (controlled) and move to the new anchor point.
-    await page.mouse.click(box.x + 30, box.y + box.height - 10, { button: 'right' });
+    // Second right-click on the right edge of the card — the menu (which
+    // opened at the top-left) doesn't cover this area, so the contextmenu
+    // event reaches the card. The menu should stay open and move to the
+    // new anchor point.
+    await page.mouse.click(box.x + box.width - 10, box.y + box.height - 10, { button: 'right' });
     await expect(menu).toBeVisible();
+    // Wait for deferred positioning (requestAnimationFrame) to settle.
+    await page.waitForTimeout(100);
     const box2 = (await menu.boundingBox())!;
 
     // The menu's top should differ between the two opens (it repositioned).
