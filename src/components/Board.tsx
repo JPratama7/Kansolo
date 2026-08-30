@@ -1,4 +1,5 @@
-import { For, Show, createEffect, createMemo, createSignal, onMount } from 'solid-js';
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
+import { Portal } from 'solid-js/web';
 import { DragDropContext, DragDropSensors, DragOverlay, useDragDropContext } from '@thisbeyond/solid-dnd';
 import { micromark } from 'micromark';
 import { Menu } from '@ark-ui/solid/menu';
@@ -6,6 +7,7 @@ import { useMenu } from '@ark-ui/solid/menu';
 import { invoke } from '@tauri-apps/api/core';
 import { toaster } from './ui/toaster.ts';
 import type { ColumnId, KanbanCard, Priority, TreeSource } from '../types.ts';
+import type { AgentRun, Agent, SkillManifest } from '../db.ts';
 import { COLUMNS } from '../columns.ts';
 import {
   createLocalCard,
@@ -14,9 +16,16 @@ import {
   listTreeSources,
   moveCard as moveCardDb,
   updateCard,
+  acpErrorMessage,
+  acpListActiveRuns,
+  acpListAgents,
+  acpListSkills,
+  acpCreateRun,
 } from '../db.ts';
 import Column from './Column.tsx';
 import EditModal, { type EditModalResult } from './EditModal.tsx';
+import AgentRunPanel from './AgentRunPanel.tsx';
+import SkillPicker from './SkillPicker.tsx';
 
 let reloadBoard: (() => void) | null = null;
 
@@ -108,6 +117,93 @@ export default function Board() {
   // machine exists (decision 12).
   const [currentlyMenuingCard, setCurrentlyMenuingCard] = createSignal<KanbanCard | null>(null);
   const [menuAnchorPoint, setMenuAnchorPoint] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 });
+  // Active agent runs keyed by card_id. Board polls acp_list_active_runs
+  // every 2s while any run is active, then distributes to Card → AgentBadge.
+  const [activeRuns, setActiveRuns] = createSignal<Record<string, AgentRun>>({});
+  // AgentRunPanel (singleton): the run being inspected, or null when closed.
+  const [panelRun, setPanelRun] = createSignal<AgentRun | null>(null);
+  const [panelOpen, setPanelOpen] = createSignal(false);
+  // Start-agent dialog state: target card + loaded agents/skills.
+  const [startDialogOpen, setStartDialogOpen] = createSignal(false);
+  const [startDialogCard, setStartDialogCard] = createSignal<KanbanCard | null>(null);
+  const [startDialogAgents, setStartDialogAgents] = createSignal<Agent[]>([]);
+  const [startDialogSkills, setStartDialogSkills] = createSignal<SkillManifest[]>([]);
+  const [startAgentName, setStartAgentName] = createSignal('');
+  const [startSkills, setStartSkills] = createSignal<string[]>([]);
+  const [startBusy, setStartBusy] = createSignal(false);
+
+  /** Poll active runs while any exists, then refresh badges + panel. */
+  async function pollActiveRuns() {
+    try {
+      const runs = await acpListActiveRuns();
+      const map: Record<string, AgentRun> = {};
+      for (const r of runs) map[r.cardId] = r;
+      setActiveRuns(map);
+    } catch (e) {
+      // Polling is best-effort; don't spam toasts on transient failures.
+      console.error('acp_list_active_runs failed:', acpErrorMessage(e));
+    }
+  }
+
+  createEffect(() => {
+    const hasActive = Object.values(activeRuns()).some(
+      (r) => r.status === 'pending' || r.status === 'running',
+    );
+    if (!hasActive) return;
+    const id = setInterval(() => void pollActiveRuns(), 2000);
+    onCleanup(() => clearInterval(id));
+  });
+
+  /** Open the run panel for a card's (latest) run. Called from AgentBadge. */
+  async function openRunPanel(cardId: string) {
+    const run = activeRuns()[cardId];
+    if (!run) return;
+    setPanelRun(run);
+    setPanelOpen(true);
+  }
+
+  /** Right-click → "Start agent…": open the start dialog for a local card. */
+  async function startAgentRun(card: KanbanCard) {
+    setStartDialogCard(card);
+    setStartDialogOpen(true);
+    setStartBusy(false);
+    try {
+      const [agents, skills] = await Promise.all([acpListAgents(), acpListSkills()]);
+      setStartDialogAgents(agents);
+      setStartDialogSkills(skills);
+      const first = agents.find((a) => a.enabled);
+      setStartAgentName(first?.name ?? '');
+      setStartSkills(first?.skills ?? []);
+      if (!first) {
+        toaster.warning({
+          title: 'No agents registered',
+          description: 'Add an agent in Settings → Agents',
+        });
+      }
+    } catch (e) {
+      toaster.error({ title: 'Could not load agents', description: acpErrorMessage(e) });
+      setStartDialogOpen(false);
+    }
+  }
+
+  /** Confirm the start dialog: create the run, then open its panel. */
+  async function confirmStartAgentRun() {
+    const card = startDialogCard();
+    const agent = startDialogAgents().find((a) => a.name === startAgentName());
+    if (!card || !agent) return;
+    setStartBusy(true);
+    try {
+      const run = await acpCreateRun(card.id, agent.name, startSkills());
+      setStartDialogOpen(false);
+      await pollActiveRuns();
+      setPanelRun(run);
+      setPanelOpen(true);
+    } catch (e) {
+      toaster.error({ title: 'Could not start agent', description: acpErrorMessage(e) });
+    } finally {
+      setStartBusy(false);
+    }
+  }
 
   // Ark UI Menu machine. Controlled `open` so we can open programmatically
   // from Card's onContextMenu / Shift+F10 without a Menu.ContextTrigger
@@ -197,6 +293,7 @@ export default function Board() {
   onMount(() => {
     void listTreeSources().then(setTreeSources);
     for (const col of COLUMNS) void fetchColumn(col.id, true);
+    void pollActiveRuns();
   });
 
   async function addCard(title: string, column: ColumnId) {
@@ -222,7 +319,7 @@ export default function Board() {
       // Revert: re-fetch the card's column to restore true state.
       const card = cards().find((c) => c.id === id);
       if (card) void fetchColumn(card.column, false);
-      toaster.error({ title: 'Edit failed', description: e instanceof Error ? e.message : String(e) });
+      toaster.error({ title: 'Edit failed', description: acpErrorMessage(e) });
     }
   }
 
@@ -241,7 +338,7 @@ export default function Board() {
     } catch (e) {
       // Revert: re-fetch the card's column to restore it.
       if (card) void fetchColumn(card.column, false);
-      toaster.error({ title: 'Delete failed', description: e instanceof Error ? e.message : String(e) });
+      toaster.error({ title: 'Delete failed', description: acpErrorMessage(e) });
     }
   }
 
@@ -260,7 +357,7 @@ export default function Board() {
       // Revert: re-fetch both affected columns.
       void fetchColumn(oldColumn, false);
       void fetchColumn(column, false);
-      toaster.error({ title: 'Move failed', description: e instanceof Error ? e.message : String(e) });
+      toaster.error({ title: 'Move failed', description: acpErrorMessage(e) });
     }
   }
 
@@ -314,6 +411,8 @@ export default function Board() {
                 onOpenEdit={requestEditCard}
                 onDelete={deleteCard}
                 onContextMenuOpen={openCardMenu}
+                activeRuns={activeRuns}
+                onAgentBadgeClick={(cardId) => void openRunPanel(cardId)}
               />
             )}
           </For>
@@ -334,6 +433,20 @@ export default function Board() {
             <Menu.Item value="edit" onSelect={editFromMenu} data-testid="menu-item-edit" class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer">
               Edit
             </Menu.Item>
+            <Show when={currentlyMenuingCard()?.source === 'local'}>
+              <Menu.Item
+                value="agent"
+                data-testid="menu-item-agent"
+                onSelect={() => {
+                  const card = currentlyMenuingCard();
+                  if (card) void startAgentRun(card);
+                  setCurrentlyMenuingCard(null);
+                }}
+                class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer"
+              >
+                Start agent…
+              </Menu.Item>
+            </Show>
             <Show when={currentlyMenuingCard()?.treeSourceId}>
               <Menu.Item value="editor" onSelect={openInEditor} data-testid="menu-item-editor" class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer">
                 Open in editor
@@ -358,6 +471,82 @@ export default function Board() {
           </Menu.Content>
         </Menu.Positioner>
       </Menu.RootProvider>
+      <AgentRunPanel
+        open={panelOpen()}
+        onOpenChange={setPanelOpen}
+        run={panelRun()}
+      />
+      <Show when={startDialogOpen()}>
+        <Portal>
+          <div class="fixed inset-0 z-50 bg-black/50" />
+          <div class="fixed inset-0 z-50 flex items-center justify-center px-4">
+            <div class="relative w-full max-w-md bg-surface rounded-[var(--radius-card)] border border-border-subtle shadow-2xl p-5 flex flex-col gap-4">
+              <div class="flex items-center justify-between">
+                <h2 class="text-base font-bold text-ink">
+                  Start Agent — {startDialogCard()?.title}
+                </h2>
+                <button
+                  type="button"
+                  class="text-xl text-ink-secondary hover:text-ink leading-none px-1"
+                  aria-label="Close"
+                  onClick={() => setStartDialogOpen(false)}
+                >
+                  ×
+                </button>
+              </div>
+              <label class="block text-xs font-semibold text-ink-secondary" for="start-agent-picker">
+                Agent
+              </label>
+              <select
+                id="start-agent-picker"
+                class="w-full text-sm rounded px-2 py-1.5 bg-base text-ink border border-border-subtle outline-none focus:border-accent"
+                value={startAgentName()}
+                onChange={(e) => {
+                  const name = e.currentTarget.value;
+                  setStartAgentName(name);
+                  const agent = startDialogAgents().find((a) => a.name === name);
+                  setStartSkills(agent?.skills ?? []);
+                }}
+              >
+                <For each={startDialogAgents()}>
+                  {(agent) => (
+                    <option value={agent.name} disabled={!agent.enabled}>
+                      {agent.name}{agent.enabled ? '' : ' (disabled)'}
+                    </option>
+                  )}
+                </For>
+              </select>
+              <Show when={startDialogSkills().length > 0 && startAgentName()}>
+                <SkillPicker
+                  available={startDialogSkills()}
+                  agentSkills={
+                    startDialogAgents().find((a) => a.name === startAgentName())?.skills ?? []
+                  }
+                  selected={startSkills()}
+                  onChange={setStartSkills}
+                />
+              </Show>
+              <div class="flex gap-2 justify-end">
+                <button
+                  type="button"
+                  class="px-3 py-1.5 text-sm font-medium rounded text-ink-secondary hover:bg-elevated transition-colors"
+                  onClick={() => setStartDialogOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  class="px-3 py-1.5 text-sm font-medium rounded bg-accent hover:bg-accent-hover text-base transition-colors disabled:opacity-50"
+                  disabled={!startAgentName() || startBusy()}
+                  onClick={() => void confirmStartAgentRun()}
+                >
+                  {startBusy() ? 'Starting…' : 'Run agent'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </Portal>
+      </Show>
     </DragDropContext>
   );
 }
