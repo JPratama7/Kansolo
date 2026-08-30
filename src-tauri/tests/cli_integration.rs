@@ -216,7 +216,7 @@ fn cli_run_resolves_repo_from_tree_source() {
     assert_eq!(card.tree_source_id.as_deref(), Some("ts-1"));
     // Runner resolves repo_path from tree_source.
     let path = kansolo_lib::db::settings::get_tree_source_path(&conn, "ts-1").unwrap();
-    assert_eq!(path, "/tmp/myrepo");
+    assert_eq!(path.as_deref(), Some("/tmp/myrepo"));
 }
 
 // ── Run lifecycle (CLI run/status/cancel) ──

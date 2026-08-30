@@ -5,6 +5,8 @@ use tauri::{AppHandle, Manager, Runtime};
 
 pub mod cards;
 pub mod settings;
+pub mod agents;
+pub mod agent_runs;
 
 /// Open a SQLite connection at `db_path` and apply WAL + busy_timeout pragmas.
 pub fn open_db_path(db_path: &PathBuf) -> Result<Connection, String> {
@@ -80,6 +82,7 @@ pub struct CardRow {
     pub source_ref: Option<String>,
     pub source_status: Option<String>,
     pub tree_source_id: Option<String>,
+    pub repo_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -100,6 +103,7 @@ pub struct Card {
     pub source_ref: Option<String>,
     pub source_status: Option<String>,
     pub tree_source_id: Option<String>,
+    pub repo_path: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -120,6 +124,7 @@ impl From<CardRow> for Card {
             source_ref: r.source_ref,
             source_status: r.source_status,
             tree_source_id: r.tree_source_id,
+            repo_path: r.repo_path,
             created_at: r.created_at,
             updated_at: r.updated_at,
         }
@@ -182,6 +187,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (8, include_str!("../../migrations/0008_plugin_sources.sql")),
     (9, include_str!("../../migrations/0009_drop_legacy_jira.sql")),
     (10, include_str!("../../migrations/0010_tree_source_id_fk.sql")),
+    (11, include_str!("../../migrations/0011_agents_runs.sql")),
 ];
 
 /// Apply pending DB migrations via rusqlite. Idempotent — skips already-applied
@@ -226,6 +232,16 @@ pub fn run_migrations(conn: &Connection) -> Result<(), String> {
 }
 
 #[cfg(test)]
+pub fn test_db() -> Connection {
+    let conn = Connection::open_in_memory().unwrap();
+    conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+    conn.pragma_update(None, "busy_timeout", 5000).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    run_migrations(&conn).unwrap();
+    conn
+}
+
+#[cfg(test)]
 mod fk_tests {
     use rusqlite::Connection;
 
@@ -253,6 +269,7 @@ mod fk_tests {
                  source_ref TEXT,
                  source_status TEXT,
                  tree_source_id TEXT,
+                 repo_path TEXT,
                  created_at TEXT NOT NULL,
                  updated_at TEXT NOT NULL,
                  FOREIGN KEY (tree_source_id) REFERENCES tree_sources(id) ON DELETE RESTRICT

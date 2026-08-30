@@ -224,8 +224,8 @@ mod tests {
         insert_agent(&conn, "zebra", "echo z", "Z", false, true, &[]).unwrap();
         insert_agent(&conn, "alpha", "echo a", "A", false, true, &[]).unwrap();
         let agents = list_agents(&conn).unwrap();
-        assert_eq!(agents.len(), 2);
-        assert_eq!(agents[0].name, "alpha");
-        assert_eq!(agents[1].name, "zebra");
+        // Migration 0011 seeds the built-in claude-code agent.
+        let names: Vec<&str> = agents.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "claude-code", "zebra"]);
     }
 }
