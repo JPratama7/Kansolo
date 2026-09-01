@@ -13,7 +13,7 @@ test("Toast action after originating component unmount: no crash, dismisses clea
   // Simulate the EditModal guard: card may be deleted while toast is shown.
   const [card, setCard] = createSignal<{ id: string } | null>({ id: "c1" });
 
-  // The Toaster must stay mounted — it renders the toast DOM. The
+  // Toaster must stay mounted — it renders the toast DOM. The
   // "originating component" (EditModal) is simulated by the `card` signal;
   // setting it to null mimics the card being deleted/unmounted while the
   // toast is still visible.
@@ -54,7 +54,7 @@ test("Toast action after originating component unmount: no crash, dismisses clea
   // Simulate the originating component's data being gone (card deleted).
   setCard(null);
 
-  // The action button renders as a <button> via Toast.ActionTrigger.
+  // Action button renders as a <button> via Toast.ActionTrigger.
   // Query the portal (document.body) for the action-trigger button.
   const btn = document.body.querySelector('[data-part="action-trigger"]') as
     | HTMLButtonElement

@@ -2,7 +2,7 @@
  * Shared test setup: registers a happy-dom `GlobalWindow` onto `globalThis`
  * so component tests can use `document`, `window`, `IntersectionObserver`,
  * etc. Under vitest with `environment: "happy-dom"` these globals are
- * already provided, but this module remains imported by tests for the
+ * already provided, but this module is still imported by tests for the
  * `resetDom()` helper (clears document.body between cases).
  *
  * Idempotent: re-installing replaces the previous window cleanly. Tests
