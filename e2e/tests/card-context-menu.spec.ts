@@ -140,7 +140,7 @@ test.describe("Card context menu", () => {
     await page.waitForTimeout(100);
     const box2 = (await menu.boundingBox())!;
 
-    // The menu's top should differ between the two opens (it repositioned).
+    // Menu's top should differ between the two opens (it repositioned).
     expect(Math.abs(box2.y - box1.y)).toBeGreaterThan(0);
   });
 });

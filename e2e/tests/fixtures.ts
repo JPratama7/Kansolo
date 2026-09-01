@@ -3,7 +3,7 @@ import { expect, type Page, test as base } from "@playwright/test";
 /**
  * Tauri invoke mock.
  *
- * The app imports `invoke` from `@tauri-apps/api/core`. In the browser (no
+ * App imports `invoke` from `@tauri-apps/api/core`. In the browser (no
  * Tauri runtime) that import resolves but `invoke` throws. We stub
  * `window.__TAURI_INTERNALS__.invoke` so the app's `invoke(...)` calls land
  * in a JS handler we control from the test.
@@ -34,7 +34,7 @@ async function installTauriMock(
   page: Page,
   handlers: InvokeHandlers,
 ): Promise<TauriMock> {
-  // The dispatcher runs in Node (via page.exposeFunction), so handler
+  // Dispatcher runs in Node (via page.exposeFunction), so handler
   // closures over test-local state (e.g. an in-memory card store) survive —
   // something addInitScript's structured-clone serialization can't do, since
   // it silently drops function-valued args. The calls log lives in Node too;
@@ -70,7 +70,7 @@ async function installTauriMock(
   };
 }
 
-/** Helper to read recorded invoke calls from the page. */
+/** Read recorded invoke calls from the page. */
 export async function readInvokeCalls(
   page: Page,
 ): Promise<Array<[string, unknown]>> {
