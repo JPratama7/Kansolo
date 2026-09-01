@@ -1,7 +1,7 @@
 //! System tray icon with a Show/Hide/Quit menu.
 //!
-//! Left-click on the tray icon toggles the main window. Right-click opens the
-//! menu. The tray is built once in `setup` and lives for the app's lifetime.
+//! Left-click toggles the main window; right-click opens the menu. Built once
+//! in `setup` and lives for the app's lifetime.
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -9,14 +9,14 @@ use tauri::{
     AppHandle, Manager, Runtime,
 };
 
-/// Tooltip shown when hovering the tray icon.
+/// Tray icon hover tooltip.
 const TOOLTIP: &str = "Kansolo";
 
 /// Build and install the tray icon + menu. Called once from `setup`.
 ///
 /// Returns an error (rather than panicking) if the default window icon
 /// isn't configured, so a misconfigured build surfaces as a setup failure
-/// instead of a process crash.
+/// instead of a crash.
 pub fn install<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::error::Error>> {
     let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", "Hide", true, None::<&str>)?;
@@ -90,7 +90,7 @@ fn quit_app<R: Runtime>(app: &AppHandle<R>) {
             Some(state) => state.core.shutdown().await,
             None => Vec::new(),
         };
-        // Mark each reaped run failed in the DB so the card lock releases.
+        // Mark each reaped run failed so the card lock releases.
         if !active_ids.is_empty() {
             if let Ok(conn) = crate::db::open_db(&handle) {
                 let now = crate::db::now_iso();
