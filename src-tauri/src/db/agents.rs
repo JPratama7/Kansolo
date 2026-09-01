@@ -137,7 +137,7 @@ pub fn update_agent(
 }
 
 /// Delete an agent. RESTRICT by default (fails if runs exist).
-/// If `delete_runs` is true, cascades by deleting runs first.
+/// With `delete_runs=true`, cascades by deleting runs first.
 pub fn delete_agent(conn: &Connection, name: &str, delete_runs: bool) -> Result<(), AcpError> {
     if delete_runs {
         conn.execute(

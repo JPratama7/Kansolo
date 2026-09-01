@@ -89,8 +89,8 @@ pub fn get_latest_run_for_card(
     }
 }
 
-/// Update the worktree_path, branch, and status for a run (used after the
-/// worktree is created, to replace the placeholder values from insert_run).
+/// Update the worktree_path, branch, and status for a run (called after the
+/// worktree is created, replacing the placeholder values from insert_run).
 pub fn update_worktree_branch(
     conn: &Connection,
     id: &str,
@@ -264,8 +264,8 @@ fn row_to_run(r: &rusqlite::Row) -> rusqlite::Result<AgentRun> {
     })
 }
 
-/// Persist the worktree path, branch, and repo root for a run (used after
-/// the worktree is created, to replace the placeholder values from
+/// Persist the worktree path, branch, and repo root for a run (called
+/// after the worktree is created, replacing the placeholder values from
 /// `insert_run`). Distinct from `update_worktree_branch`, which also flips
 /// `status` and predates `repo_root`.
 pub fn set_worktree_info(
@@ -285,8 +285,8 @@ pub fn set_worktree_info(
 }
 
 /// Check whether any card linked to `tree_source_id` has an active
-/// (pending/running) agent run. Used to block tree-source deletion while a
-/// run is in flight, mirroring the per-card lock in [`is_card_locked`].
+/// (pending/running) agent run. Blocks tree-source deletion while a run
+/// is in flight, mirroring the per-card lock in [`is_card_locked`].
 pub fn is_tree_source_locked(conn: &Connection, tree_source_id: &str) -> bool {
     conn.query_row(
         "SELECT EXISTS(
