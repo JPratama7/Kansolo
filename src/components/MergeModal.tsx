@@ -1,7 +1,7 @@
-import { For, createSignal } from 'solid-js';
-import { Portal } from 'solid-js/web';
-import { Dialog } from '@ark-ui/solid/dialog';
-import type { ConflictResolution, SyncConflict } from '../types.ts';
+import { createEffect, createSignal, For } from "solid-js";
+import { Portal } from "solid-js/web";
+import { Dialog } from "@ark-ui/solid/dialog";
+import type { ConflictResolution, SyncConflict } from "../types.ts";
 
 interface MergeModalProps {
   conflicts: SyncConflict[];
@@ -11,23 +11,30 @@ interface MergeModalProps {
   onOpenChange: (open: boolean) => void;
 }
 
-type Choice = 'local' | 'remote';
+type Choice = "local" | "remote";
 type Choices = Record<string, Choice>;
 
 const FIELD_LABELS: Record<string, string> = {
-  title: 'Title',
-  description: 'Description',
-  priority: 'Priority',
-  column: 'Column',
-  sourceStatus: 'Source status',
+  title: "Title",
+  description: "Description",
+  priority: "Priority",
+  column: "Column",
+  sourceStatus: "Source status",
 };
 
 export default function MergeModal(props: MergeModalProps) {
   // Per-field choice, keyed `${sourceRef}:${field}`.
   const [choices, setChoices] = createSignal<Choices>({});
 
+  // Reset per-field choices whenever the conflict set changes (e.g. a new
+  // sync surfaces a different set of cards) so stale picks don't bleed in.
+  createEffect(() => {
+    props.conflicts;
+    setChoices({});
+  });
+
   function choiceFor(ref: string, field: string): Choice {
-    return choices()[`${ref}:${field}`] ?? 'local';
+    return choices()[`${ref}:${field}`] ?? "local";
   }
 
   function pick(ref: string, field: string, value: Choice) {
@@ -46,13 +53,15 @@ export default function MergeModal(props: MergeModalProps) {
 
   /** Package the per-field radio choices into ConflictResolution[] for Rust. */
   function submit() {
-    const resolutions: ConflictResolution[] = props.conflicts.map((conflict) => {
-      const fieldChoices: Record<string, 'local' | 'remote'> = {};
-      for (const c of conflict.conflicts) {
-        fieldChoices[c.field] = choiceFor(conflict.sourceRef, c.field);
-      }
-      return { sourceRef: conflict.sourceRef, choices: fieldChoices };
-    });
+    const resolutions: ConflictResolution[] = props.conflicts.map(
+      (conflict) => {
+        const fieldChoices: Record<string, "local" | "remote"> = {};
+        for (const c of conflict.conflicts) {
+          fieldChoices[c.field] = choiceFor(conflict.sourceRef, c.field);
+        }
+        return { sourceRef: conflict.sourceRef, choices: fieldChoices };
+      },
+    );
     props.onResolve(resolutions);
   }
 
@@ -64,7 +73,9 @@ export default function MergeModal(props: MergeModalProps) {
       closeOnEscape
       closeOnInteractOutside
       aria-label="Merge conflicts"
-      onOpenChange={(e) => { if (!e.open) props.onCancel(); }}
+      onOpenChange={(e) => {
+        if (!e.open) props.onCancel();
+      }}
     >
       <Portal>
         <Dialog.Backdrop class="fixed inset-0 z-50 bg-black/50" />
@@ -76,7 +87,8 @@ export default function MergeModal(props: MergeModalProps) {
           >
             <div class="sticky top-0 flex items-center justify-between px-4 py-3 bg-surface border-b border-border-subtle">
               <h2 class="text-base font-bold text-ink">
-                Merge conflicts <span class="tabular-nums">({props.conflicts.length})</span>
+                Merge conflicts{" "}
+                <span class="tabular-nums">({props.conflicts.length})</span>
               </h2>
               <button
                 type="button"
@@ -90,7 +102,8 @@ export default function MergeModal(props: MergeModalProps) {
 
             <div class="p-4 flex flex-col gap-4">
               <p class="text-xs text-ink-secondary">
-                Local edits and remote changes diverged. Pick per field, or take all of one side per card.
+                Local edits and remote changes diverged. Pick per field, or take
+                all of one side per card.
               </p>
 
               <For each={props.conflicts}>
@@ -104,7 +117,8 @@ export default function MergeModal(props: MergeModalProps) {
                         <button
                           type="button"
                           class="text-xs px-2 py-1 rounded border border-border-subtle text-ink-secondary hover:bg-elevated"
-                          onClick={() => takeAll(conflict.sourceRef, conflict, 'local')}
+                          onClick={() =>
+                            takeAll(conflict.sourceRef, conflict, "local")}
                         >
                           All local
                         </button>
@@ -112,7 +126,8 @@ export default function MergeModal(props: MergeModalProps) {
                           type="button"
                           data-testid={`take-all-remote-${conflict.sourceRef}`}
                           class="text-xs px-2 py-1 rounded border border-border-subtle text-ink-secondary hover:bg-elevated"
-                          onClick={() => takeAll(conflict.sourceRef, conflict, 'remote')}
+                          onClick={() =>
+                            takeAll(conflict.sourceRef, conflict, "remote")}
                         >
                           All remote
                         </button>
@@ -129,34 +144,54 @@ export default function MergeModal(props: MergeModalProps) {
                             <label
                               class="flex gap-2 items-start text-sm rounded px-2 py-1.5 border cursor-pointer"
                               classList={{
-                                'border-accent bg-accent/10': choiceFor(conflict.sourceRef, c.field) === 'local',
-                                'border-border-subtle': choiceFor(conflict.sourceRef, c.field) !== 'local',
+                                "border-accent bg-accent/10":
+                                  choiceFor(conflict.sourceRef, c.field) ===
+                                    "local",
+                                "border-border-subtle":
+                                  choiceFor(conflict.sourceRef, c.field) !==
+                                    "local",
                               }}
                             >
                               <input
                                 type="radio"
                                 name={`${conflict.sourceRef}:${c.field}`}
                                 value="local"
-                                checked={choiceFor(conflict.sourceRef, c.field) === 'local'}
-                                onChange={() => pick(conflict.sourceRef, c.field, 'local')}
+                                checked={choiceFor(
+                                  conflict.sourceRef,
+                                  c.field,
+                                ) === "local"}
+                                onChange={() =>
+                                  pick(conflict.sourceRef, c.field, "local")}
                               />
-                              <span class="break-words text-ink">{c.local || '(empty)'}</span>
+                              <span class="break-words text-ink">
+                                {c.local || "(empty)"}
+                              </span>
                             </label>
                             <label
                               class="flex gap-2 items-start text-sm rounded px-2 py-1.5 border cursor-pointer"
                               classList={{
-                                'border-accent bg-accent/10': choiceFor(conflict.sourceRef, c.field) === 'remote',
-                                'border-border-subtle': choiceFor(conflict.sourceRef, c.field) !== 'remote',
+                                "border-accent bg-accent/10":
+                                  choiceFor(conflict.sourceRef, c.field) ===
+                                    "remote",
+                                "border-border-subtle":
+                                  choiceFor(conflict.sourceRef, c.field) !==
+                                    "remote",
                               }}
                             >
                               <input
                                 type="radio"
                                 name={`${conflict.sourceRef}:${c.field}`}
                                 value="remote"
-                                checked={choiceFor(conflict.sourceRef, c.field) === 'remote'}
-                                onChange={() => pick(conflict.sourceRef, c.field, 'remote')}
+                                checked={choiceFor(
+                                  conflict.sourceRef,
+                                  c.field,
+                                ) === "remote"}
+                                onChange={() =>
+                                  pick(conflict.sourceRef, c.field, "remote")}
                               />
-                              <span class="break-words text-ink">{c.remote || '(empty)'}</span>
+                              <span class="break-words text-ink">
+                                {c.remote || "(empty)"}
+                              </span>
                             </label>
                           </div>
                         </div>

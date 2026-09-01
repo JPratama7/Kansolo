@@ -1,13 +1,55 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500;600&family=JetBrains+Mono&display=swap');
 @import "tailwindcss";
 
 @theme {
-  /* Surfaces — layered elevation */
+  /* Surfaces — editorial light */
+  --color-base: #fafafa;
+  --color-surface: #ffffff;
+  --color-elevated: #f4f4f4;
+  --color-hover: #f0f0f0;
+  --color-border: #e5e5e5;
+  --color-border-subtle: #eeeeee;
+  --color-card-border: #eeeeee;
+
+  /* Text */
+  --color-ink: #111111;
+  --color-ink-secondary: #6b6b6b;
+  --color-ink-muted: #9f9f9f;
+
+  /* Accent */
+  --color-accent: #0d7377;
+  --color-accent-hover: #0a5f63;
+
+  /* Column accents */
+  --color-col-backlog: #a8dadc;
+  --color-col-ongoing: #f4a261;
+  --color-col-done: #2a9d8f;
+
+  /* Priority */
+  --color-p-low: #2a9d8f;
+  --color-p-med: #457b9d;
+  --color-p-high: #f4a261;
+  --color-p-urgent: #e63946;
+
+  /* Typography */
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "DM Serif Display", ui-serif, Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --radius-card: 8px;
+  --radius-list: 12px;
+}
+
+/* Dark theme token overrides. */
+html.dark {
+  /* Surfaces */
   --color-base: #0f172a;
   --color-surface: #1e293b;
   --color-elevated: #334155;
   --color-hover: #3e4c66;
   --color-border: #475569;
   --color-border-subtle: #334155;
+  --color-card-border: #334155;
 
   /* Text */
   --color-ink: #f1f5f9;
@@ -28,9 +70,14 @@
   --color-p-med: #eab308;
   --color-p-high: #f97316;
   --color-p-urgent: #ef4444;
+}
 
-  --radius-card: 8px;
-  --radius-list: 12px;
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
 }
 
 html,
@@ -41,14 +88,10 @@ body,
 
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-sans);
   color: var(--color-ink);
   background: var(--color-base);
   -webkit-font-smoothing: antialiased;
-  /* Tell the browser this app is dark so native form controls (select
-     popups, date pickers, scrollbars) render with a dark palette instead
-     of the OS default light — keeps dropdown option text visible. */
-  color-scheme: dark;
   /* Prevent double-tap zoom delay on touch devices. */
   touch-action: manipulation;
   /* Intentional: transparent tap highlight lets hover/active states show
@@ -70,7 +113,12 @@ textarea:focus-visible,
 }
 
 /* Headings: prevent widows, allow anchor scroll offset. */
-h1, h2, h3, h4, h5, h6 {
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
   text-wrap: balance;
 }
 :target {
@@ -88,10 +136,18 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 /* Safe-area insets for notch / rounded-corner displays. */
-.safe-top { padding-top: env(safe-area-inset-top); }
-.safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
-.safe-left { padding-left: env(safe-area-inset-left); }
-.safe-right { padding-right: env(safe-area-inset-right); }
+.safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.safe-left {
+  padding-left: env(safe-area-inset-left);
+}
+.safe-right {
+  padding-right: env(safe-area-inset-right);
+}
 
 /* Native <select> option list popup — some engines ignore color-scheme
    for the popup itself, so force theme colors on <option> too. */
@@ -133,14 +189,20 @@ select option:hover {
 }
 
 /* Markdown render — compact prose for card previews and edit preview. */
-.md-preview p { margin: 0 0 0.25rem; }
-.md-preview p:last-child { margin-bottom: 0; }
+.md-preview p {
+  margin: 0 0 0.25rem;
+}
+.md-preview p:last-child {
+  margin-bottom: 0;
+}
 .md-preview ul,
 .md-preview ol {
   margin: 0 0 0.25rem;
   padding-left: 1.1rem;
 }
-.md-preview li { margin: 0; }
+.md-preview li {
+  margin: 0;
+}
 .md-preview h1,
 .md-preview h2,
 .md-preview h3,
@@ -181,7 +243,8 @@ select option:hover {
 }
 
 .trello-card {
-  transition: background 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease, opacity 0.15s ease;
+  transition: background 0.12s ease, box-shadow 0.12s ease, border-color 0.12s
+    ease, opacity 0.15s ease;
   /* Skip rendering off-screen cards (lightweight virtualization). */
   content-visibility: auto;
   contain-intrinsic-size: auto 80px;
@@ -214,8 +277,12 @@ select option:hover {
    elevated blocks on the surface. Matches the real card silhouette so the
    layout doesn't shift when cards arrive. */
 @keyframes skeleton-shimmer {
-  from { background-position: -200% 0; }
-  to   { background-position: 200% 0; }
+  from {
+    background-position: -200% 0;
+  }
+  to {
+    background-position: 200% 0;
+  }
 }
 .card-skeleton {
   background: var(--color-surface);
@@ -237,8 +304,12 @@ select option:hover {
   background-size: 200% 100%;
   animation: skeleton-shimmer 1.4s ease-in-out infinite;
 }
-.card-skeleton-line--sm { height: 0.55rem; }
-.card-skeleton-line--xs { height: 0.5rem; }
+.card-skeleton-line--sm {
+  height: 0.55rem;
+}
+.card-skeleton-line--xs {
+  height: 0.5rem;
+}
 
 .add-link {
   color: var(--color-ink-secondary);
@@ -251,6 +322,16 @@ select option:hover {
 .priority-strip {
   height: 4px;
   border-radius: var(--radius-card) var(--radius-card) 0 0;
+}
+
+/* Priority bar — 4px left edge encoding priority. */
+.priority-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 100%;
+  border-radius: var(--radius-card) 0 0 var(--radius-card);
 }
 
 /* Column accent — thin top bar encoding column identity */
@@ -271,22 +352,48 @@ select option:hover {
 
 /* --- Settings dialog: smooth open/close + pane transitions --- */
 @keyframes settings-backdrop-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 @keyframes settings-panel-in {
-  from { opacity: 0; transform: translateY(10px) scale(0.97); }
-  to   { opacity: 1; transform: translateY(0)   scale(1); }
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 @keyframes settings-pane-in {
-  from { opacity: 0; transform: translateX(6px); }
-  to   { opacity: 1; transform: translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateX(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
-.settings-backdrop { animation: settings-backdrop-in 160ms ease-out both; }
-.settings-panel    { animation: settings-panel-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both; }
-.settings-pane     { animation: settings-pane-in 140ms ease-out both; }
-.settings-closing .settings-backdrop { animation: settings-backdrop-in 120ms ease-in reverse both; }
-.settings-closing .settings-panel    { animation: settings-panel-in 140ms ease-in reverse both; }
+.settings-backdrop {
+  animation: settings-backdrop-in 160ms ease-out both;
+}
+.settings-panel {
+  animation: settings-panel-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.settings-pane {
+  animation: settings-pane-in 140ms ease-out both;
+}
+.settings-closing .settings-backdrop {
+  animation: settings-backdrop-in 120ms ease-in reverse both;
+}
+.settings-closing .settings-panel {
+  animation: settings-panel-in 140ms ease-in reverse both;
+}
 
 /* Resize grip — bottom-right corner of the settings panel. */
 .settings-grip {
@@ -310,16 +417,35 @@ select option:hover {
   border-radius: 0 0 2px 0;
   opacity: 0.5;
 }
-.settings-grip:hover::after { opacity: 0.9; }
+.settings-grip:hover::after {
+  opacity: 0.9;
+}
 
 /* --- Ticket detail modal: reader-first, edit is opt-in --- */
-@keyframes ticket-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
-@keyframes ticket-panel-in {
-  from { opacity: 0; transform: translateY(8px) scale(0.98); }
-  to   { opacity: 1; transform: translateY(0)   scale(1); }
+@keyframes ticket-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
-.ticket-backdrop { animation: ticket-backdrop-in 140ms ease-out both; }
-.ticket-panel    { animation: ticket-panel-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+@keyframes ticket-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.ticket-backdrop {
+  animation: ticket-backdrop-in 140ms ease-out both;
+}
+.ticket-panel {
+  animation: ticket-panel-in 180ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
 
 /* Segmented Preview/Edit control — makes the default mode visible. */
 .segmented {
@@ -337,7 +463,9 @@ select option:hover {
   border-radius: 6px;
   transition: background 0.12s ease, color 0.12s ease;
 }
-.segmented-btn:hover { color: var(--color-ink); }
+.segmented-btn:hover {
+  color: var(--color-ink);
+}
 .segmented-active {
   background: var(--color-elevated);
   color: var(--color-ink);
@@ -360,34 +488,67 @@ select option:hover {
   height: 0.5rem;
   border-radius: 9999px;
 }
-.priority-pill--low::before    { background: var(--color-p-low); }
-.priority-pill--medium::before { background: var(--color-p-med); }
-.priority-pill--high::before   { background: var(--color-p-high); }
-.priority-pill--urgent::before { background: var(--color-p-urgent); }
+.priority-pill--low::before {
+  background: var(--color-p-low);
+}
+.priority-pill--medium::before {
+  background: var(--color-p-med);
+}
+.priority-pill--high::before {
+  background: var(--color-p-high);
+}
+.priority-pill--urgent::before {
+  background: var(--color-p-urgent);
+}
 
 /* Metadata chip — mono source ref / tree label. */
 .metadata-chip {
-  font-family: ui-monospace, monospace;
-  font-size: 0.625rem;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
   color: var(--color-ink-secondary);
-  background: var(--color-base);
-  border-radius: 4px;
+  background: var(--color-elevated);
+  border-radius: 3px;
   padding: 0.05rem 0.35rem;
 }
 
 /* --- Sync summary modal: delivery-receipt feel --- */
-@keyframes sync-backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sync-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
 @keyframes sync-panel-in {
-  from { opacity: 0; transform: translateY(12px) scale(0.97); }
-  to   { opacity: 1; transform: translateY(0)   scale(1); }
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 @keyframes sync-row-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
-.sync-backdrop { animation: sync-backdrop-in 140ms ease-out both; }
-.sync-panel    { animation: sync-panel-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both; }
-.sync-row      { animation: sync-row-in 220ms ease-out both; }
+.sync-backdrop {
+  animation: sync-backdrop-in 140ms ease-out both;
+}
+.sync-panel {
+  animation: sync-panel-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.sync-row {
+  animation: sync-row-in 220ms ease-out both;
+}
 
 /* Stacked proportion bar — each segment width set inline by JS.
    Grow transition runs after mount via a .is-mounted class. */
@@ -409,8 +570,12 @@ select option:hover {
 
 @media (prefers-reduced-motion: reduce) {
   .ticket-backdrop,
-  .ticket-panel { animation: none; }
-  .segmented-btn { transition: none; }
+  .ticket-panel {
+    animation: none;
+  }
+  .segmented-btn {
+    transition: none;
+  }
   .settings-backdrop,
   .settings-panel,
   .settings-pane,
@@ -420,8 +585,13 @@ select option:hover {
   }
   .sync-backdrop,
   .sync-panel,
-  .sync-row { animation: none; }
-  .sync-bar-seg { transition: none; width: var(--seg-width, 0); }
+  .sync-row {
+    animation: none;
+  }
+  .sync-bar-seg {
+    transition: none;
+    width: var(--seg-width, 0);
+  }
 }
 
 /* --- Ark UI Toast: region + entrance/exit transitions --- */
@@ -451,11 +621,305 @@ select option:hover {
   --scale: 0.96;
 }
 /* Type accent on the left edge — subtle color cue per toast type. */
-[data-scope='toast'][data-part='root'][data-type='success'] { border-left: 3px solid var(--color-col-done); }
-[data-scope='toast'][data-part='root'][data-type='error']   { border-left: 3px solid var(--color-p-urgent); }
-[data-scope='toast'][data-part='root'][data-type='warning'] { border-left: 3px solid var(--color-p-high); }
-[data-scope='toast'][data-part='root'][data-type='info']    { border-left: 3px solid var(--color-col-ongoing); }
+[data-scope='toast'][data-part='root'][data-type='success'] {
+  border-left: 3px solid var(--color-col-done);
+}
+[data-scope='toast'][data-part='root'][data-type='error'] {
+  border-left: 3px solid var(--color-p-urgent);
+}
+[data-scope='toast'][data-part='root'][data-type='warning'] {
+  border-left: 3px solid var(--color-p-high);
+}
+[data-scope='toast'][data-part='root'][data-type='info'] {
+  border-left: 3px solid var(--color-col-ongoing);
+}
 
 @media (prefers-reduced-motion: reduce) {
-  [data-scope='toast'][data-part='root'] { transition: none; }
+  [data-scope='toast'][data-part='root'] {
+    transition: none;
+  }
+}
+
+/* --- Agent run panel: chat-thread layout (ChatGPT-web feel) --- */
+.agent-backdrop {
+  background: rgba(2, 6, 23, 0.7);
+  backdrop-filter: blur(2px);
+}
+.agent-panel {
+  width: 100%;
+  max-width: 760px;
+  height: 100%;
+  max-height: 100vh;
+  background: var(--color-base);
+  border-left: 1px solid var(--color-border-subtle);
+  border-right: 1px solid var(--color-border-subtle);
+  box-shadow: 0 0 60px rgba(0, 0, 0, 0.45);
+}
+.agent-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-surface);
+}
+.agent-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 9999px;
+  flex-shrink: 0;
+  background: var(--color-ink-muted);
+}
+.agent-dot--live {
+  background: var(--color-accent);
+  animation: agent-dot-breathe 1.6s ease-in-out infinite;
+}
+.agent-dot--ok {
+  background: var(--color-col-done);
+}
+.agent-dot--err {
+  background: var(--color-p-urgent);
+}
+.agent-dot--muted {
+  background: var(--color-ink-muted);
+}
+@keyframes agent-dot-breathe {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
+}
+.agent-chip {
+  font-family: ui-monospace, monospace;
+  font-size: 0.625rem;
+  color: var(--color-ink-secondary);
+  background: var(--color-base);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 4px;
+  padding: 0.05rem 0.35rem;
+}
+.agent-stream {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1.25rem 1rem 1.5rem;
+}
+.agent-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 680px;
+  margin: 0 auto;
+}
+.agent-empty {
+  text-align: center;
+  color: var(--color-ink-muted);
+  font-size: 0.8rem;
+  padding: 2rem 0;
+}
+.agent-turn {
+  position: relative;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-left: 2px solid var(--color-accent);
+  border-radius: 0 8px 8px 0;
+  padding: 0.6rem 0.75rem;
+  max-height: 20rem;
+  overflow: auto;
+}
+.agent-turn-text {
+  font-family: ui-monospace, monospace;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+.agent-turn-user {
+  align-self: flex-end;
+  max-width: 80%;
+  background: rgba(129, 140, 248, 0.12);
+  border: 1px solid rgba(129, 140, 248, 0.3);
+  border-radius: 12px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--color-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.agent-system {
+  text-align: center;
+  font-size: 0.7rem;
+  color: var(--color-ink-muted);
+  padding: 0.25rem 0;
+}
+.agent-system--waiting {
+  color: var(--color-p-med);
+  font-weight: 600;
+}
+.agent-status {
+  text-align: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.3rem 0;
+}
+.agent-status--ok {
+  color: var(--color-col-done);
+}
+.agent-status--err {
+  color: var(--color-p-urgent);
+}
+.agent-status--muted {
+  color: var(--color-ink-muted);
+}
+.agent-perm {
+  font-size: 0.72rem;
+  color: var(--color-p-med);
+  background: rgba(234, 179, 8, 0.08);
+  border-left: 2px solid var(--color-p-med);
+  border-radius: 0 6px 6px 0;
+  padding: 0.4rem 0.6rem;
+}
+.agent-perm--timeout {
+  color: var(--color-p-urgent);
+  background: rgba(239, 68, 68, 0.08);
+  border-left-color: var(--color-p-urgent);
+}
+.agent-footer {
+  padding: 0.75rem 1rem 1rem;
+  border-top: 1px solid var(--color-border-subtle);
+  background: var(--color-base);
+}
+.agent-composer {
+  max-width: 680px;
+  margin: 0 auto;
+}
+.agent-composer-pill {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.4rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 16px;
+  padding: 0.4rem 0.5rem 0.4rem 0.75rem;
+  transition: border-color 0.12s ease;
+}
+.agent-composer-pill:focus-within {
+  border-color: var(--color-accent);
+}
+.agent-composer-input {
+  flex: 1;
+  resize: none;
+  max-height: 8rem;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: var(--color-ink);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  font-family: inherit;
+}
+.agent-composer-input::placeholder {
+  color: var(--color-ink-muted);
+}
+.agent-send {
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 9999px;
+  background: var(--color-accent);
+  color: var(--color-base);
+  font-size: 0.9rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s ease, opacity 0.12s ease;
+}
+.agent-send:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+.agent-send:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.agent-actionbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  justify-content: center;
+  max-width: 680px;
+  margin: 0 auto;
+}
+.agent-actionbar button {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 500;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-subtle);
+  color: var(--color-ink);
+  background: var(--color-surface);
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.agent-actionbar button:hover:not(:disabled) {
+  background: var(--color-elevated);
+  border-color: var(--color-border);
+}
+.agent-actionbar .agent-actionbar-primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-base);
+  font-weight: 600;
+}
+.agent-actionbar .agent-actionbar-primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+.agent-actionbar .agent-actionbar-danger {
+  color: var(--color-p-urgent);
+  border-color: rgba(239, 68, 68, 0.4);
+}
+.agent-actionbar .agent-actionbar-danger:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.1);
+}
+.agent-stop {
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 9999px;
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: var(--color-p-urgent);
+  background: transparent;
+  font-size: 0.7rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s ease;
+}
+.agent-stop:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.1);
+}
+.agent-footer-muted {
+  text-align: center;
+  font-size: 0.72rem;
+  color: var(--color-ink-muted);
+  padding: 0.4rem 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-dot--live {
+    animation: none;
+  }
+  .agent-composer-pill,
+  .agent-send,
+  .agent-stop,
+  .agent-actionbar button {
+    transition: none;
+  }
 }

@@ -35,7 +35,10 @@ function parseSemver(tag: string): [number, number, number] {
   return [Number(m[1]), Number(m[2]), Number(m[3])];
 }
 
-function bumpKind(subject: string, body: string): "major" | "minor" | "patch" | "none" {
+function bumpKind(
+  subject: string,
+  body: string,
+): "major" | "minor" | "patch" | "none" {
   // Breaking change: footer or ! after type
   if (body.includes("BREAKING CHANGE:") || /^[a-z]+(\(.+\))?!:/.test(subject)) {
     return "major";
@@ -48,7 +51,12 @@ function bumpKind(subject: string, body: string): "major" | "minor" | "patch" | 
 const tag = await lastTag();
 const range = tag ? `${tag}..HEAD` : "HEAD";
 // First-parent log, subject + body, no merges.
-const log = await git(["log", "--no-merges", "--format=%H%n%s%n%b%n---END---", range]);
+const log = await git([
+  "log",
+  "--no-merges",
+  "--format=%H%n%s%n%b%n---END---",
+  range,
+]);
 
 let bump: "major" | "minor" | "patch" | "none" = "none";
 const entries = log.split("---END---\n").filter((e) => e.trim());
@@ -57,7 +65,10 @@ for (const entry of entries) {
   const subject = lines[1] ?? "";
   const body = lines.slice(2).join("\n");
   const k = bumpKind(subject, body);
-  if (k === "major") { bump = "major"; break; }
+  if (k === "major") {
+    bump = "major";
+    break;
+  }
   if (k === "minor" && bump === "none") bump = "minor";
   if (k === "patch" && bump === "none") bump = "patch";
 }

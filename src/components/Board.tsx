@@ -1,30 +1,61 @@
-import { For, Show, createEffect, createMemo, createSignal, onMount } from 'solid-js';
-import { DragDropContext, DragDropSensors, DragOverlay, useDragDropContext } from '@thisbeyond/solid-dnd';
-import { micromark } from 'micromark';
-import { Menu } from '@ark-ui/solid/menu';
-import { useMenu } from '@ark-ui/solid/menu';
-import { invoke } from '@tauri-apps/api/core';
-import { toaster } from './ui/toaster.ts';
-import type { ColumnId, KanbanCard, Priority, TreeSource } from '../types.ts';
-import { COLUMNS } from '../columns.ts';
 import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js";
+import { Portal } from "solid-js/web";
+import {
+  DragDropContext,
+  DragDropSensors,
+  DragOverlay,
+  useDragDropContext,
+} from "@thisbeyond/solid-dnd";
+import Markdown from "./Markdown.tsx";
+import { Menu, useMenu } from "@ark-ui/solid/menu";
+import { invoke } from "@tauri-apps/api/core";
+import { toaster } from "./ui/toaster.ts";
+import type {
+  AcpActiveRunsChangedEvent,
+  Agent,
+  AgentRun,
+  ColumnId,
+  KanbanCard,
+  Priority,
+  SkillManifest,
+  TreeSource,
+} from "../types.ts";
+import { safeListen } from "../event.ts";
+import { COLUMNS } from "../columns.ts";
+import {
+  acpCreateRun,
+  acpErrorMessage,
+  acpLatestRunForCard,
+  acpListActiveRuns,
+  acpListAgents,
+  acpListSkills,
   createLocalCard,
   deleteCard as deleteCardDb,
   listCardsByColumn,
   listTreeSources,
   moveCard as moveCardDb,
   updateCard,
-} from '../db.ts';
-import Column from './Column.tsx';
-import EditModal, { type EditModalResult } from './EditModal.tsx';
+} from "../db.ts";
+import Column from "./Column.tsx";
+import EditModal, { type EditModalResult } from "./EditModal.tsx";
+import AgentRunPanel from "./AgentRunPanel.tsx";
+import SkillPicker from "./SkillPicker.tsx";
 
-let reloadBoard: (() => void) | null = null;
+let reloadBoard: (() => Promise<void>) | null = null;
 
-/** Re-seed the board from the database. Used by App, e.g. after a sync.
- * Triggers each column to re-fetch with a visible loading state. */
+/** Re-seed the board from the database. Called by App, e.g. after a sync.
+ * Triggers each column to re-fetch with a visible loading state, and
+ * resolves only once every column fetch has settled. */
 export function reload(): Promise<void> {
-  reloadBoard?.();
-  return Promise.resolve();
+  return reloadBoard?.() ?? Promise.resolve();
 }
 
 interface DragEndEvent {
@@ -33,48 +64,56 @@ interface DragEndEvent {
 }
 
 const PRIORITY_STRIP: Record<Priority, string> = {
-  low: 'bg-p-low',
-  medium: 'bg-p-med',
-  high: 'bg-p-high',
-  urgent: 'bg-p-urgent',
+  low: "bg-p-low",
+  medium: "bg-p-med",
+  high: "bg-p-high",
+  urgent: "bg-p-urgent",
 };
 
 /** Portals the dragged card to document.body so it paints above all columns. */
 function CardDragOverlay(props: { treeSources: () => TreeSource[] }) {
   const [state] = useDragDropContext() as [
-    { active: { draggable: string | null }; draggables: Record<string, { data?: KanbanCard }> },
+    {
+      active: { draggable: string | null };
+      draggables: Record<string, { data?: KanbanCard }>;
+    },
   ];
   const activeCard = () => {
     const id = state.active.draggable;
     return id ? state.draggables[id]?.data : undefined;
   };
   return (
-    <DragOverlay class="trello-card is-drag-overlay bg-elevated rounded-[var(--radius-card)] border border-border-subtle shadow-2xl">
+    <DragOverlay class="trello-card is-drag-overlay relative bg-surface rounded-[var(--radius-card)] border border-card-border shadow-2xl">
       <Show when={activeCard()}>
         {(card) => (
           <>
-            <div class={`priority-strip ${PRIORITY_STRIP[card().priority]}`} aria-hidden="true" />
-            <div class="px-3 py-2">
-              <p class="text-sm text-ink leading-snug">{card().title}</p>
+            <div
+              class={`priority-bar ${PRIORITY_STRIP[card().priority]}`}
+              aria-hidden="true"
+            />
+            <div class="p-4">
+              <p class="text-sm font-semibold text-ink leading-snug">
+                {card().title}
+              </p>
               <Show when={card().description}>
-                <div class="md-preview text-xs text-ink-secondary mt-1 line-clamp-2" innerHTML={micromark(card().description)} />
+                <Markdown
+                  content={card().description}
+                  class="md-preview text-[0.82rem] text-ink-secondary mt-1 line-clamp-2 leading-snug"
+                />
               </Show>
               <Show when={card().treeSourceId}>
-                <p class="text-[10px] font-mono text-ink-muted mt-1 truncate" title={card().treeSourceId}>
-                  {props.treeSources().find((s) => s.id === card().treeSourceId)?.label ?? card().treeSourceId}
+                <p
+                  class="text-[0.65rem] font-mono text-ink-muted mt-2 truncate"
+                  title={card().treeSourceId}
+                >
+                  {props.treeSources().find((s) => s.id === card().treeSourceId)
+                    ?.label ?? card().treeSourceId}
                 </p>
               </Show>
-              <div class="flex items-center justify-between gap-2 mt-2">
-                <div class="flex items-center gap-1.5 min-w-0">
-                  <span class="text-[10px] font-semibold uppercase tracking-wide text-ink-secondary">
-                    {card().priority}
-                  </span>
-                  {card().source !== 'local' && card().sourceRef && (
-                    <span class="text-[10px] font-mono text-ink-secondary bg-base/60 rounded px-1 py-0.5 truncate">
-                      {card().sourceRef}
-                    </span>
-                  )}
-                </div>
+              <div class="flex items-center gap-2 mt-3">
+                {card().source !== "local" && card().sourceRef && (
+                  <span class="metadata-chip">{card().sourceRef}</span>
+                )}
               </div>
             </div>
           </>
@@ -89,35 +128,205 @@ export default function Board() {
   const [treeSources, setTreeSources] = createSignal<TreeSource[]>([]);
   // Per-column loading state. True while a column's first fetch (or a sync
   // reload) is in flight — drives skeleton placeholders in Column.
-  const [columnLoading, setColumnLoading] = createSignal<Record<ColumnId, boolean>>({
+  const [columnLoading, setColumnLoading] = createSignal<
+    Record<ColumnId, boolean>
+  >({
     backlog: true,
     ongoing: true,
     done: true,
   });
-  // Singleton EditModal state: the card currently being edited, or null when
-  // the modal is closed. Lifted out of Card so only one Dialog.Root exists.
-  const [currentlyEditingCard, setCurrentlyEditingCard] = createSignal<KanbanCard | null>(null);
+  // Singleton EditModal state: the card currently being edited, or null
+  // when the modal is closed. Lifted out of Card so only one Dialog.Root exists.
+  const [currentlyEditingCard, setCurrentlyEditingCard] = createSignal<
+    KanbanCard | null
+  >(null);
   // Dirty state lifted from EditModal so Board can guard card-switching.
   const [isEditingDirty, setIsEditingDirty] = createSignal(false);
   // Pending card switch: the card the user wants to edit, awaiting discard
   // confirmation for the current dirty card.
-  const [pendingSwitchCard, setPendingSwitchCard] = createSignal<KanbanCard | null>(null);
-  const [pendingSwitchToastId, setPendingSwitchToastId] = createSignal<string | null>(null);
-  // Singleton context menu state: the card whose menu is open + the screen
-  // point to anchor the menu at. Lifted out of Card so only one Menu.Root
-  // machine exists (decision 12).
-  const [currentlyMenuingCard, setCurrentlyMenuingCard] = createSignal<KanbanCard | null>(null);
-  const [menuAnchorPoint, setMenuAnchorPoint] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [pendingSwitchCard, setPendingSwitchCard] = createSignal<
+    KanbanCard | null
+  >(null);
+  const [pendingSwitchToastId, setPendingSwitchToastId] = createSignal<
+    string | null
+  >(null);
+  // Context menu state hoisted to Board so only one menu is open at a time.
+  const [currentlyMenuingCard, setCurrentlyMenuingCard] = createSignal<
+    KanbanCard | null
+  >(null);
+  const [menuAnchorPoint, setMenuAnchorPoint] = createSignal<
+    { x: number; y: number }
+  >({ x: 0, y: 0 });
+  // Active agent runs keyed by card_id. Board polls acp_list_active_runs
+  // every 2s while any run is active, then distributes to Card → AgentBadge.
+  const [activeRuns, setActiveRuns] = createSignal<Record<string, AgentRun>>(
+    {},
+  );
+  // AgentRunPanel (singleton): the run being inspected, or null when closed.
+  const [panelRun, setPanelRun] = createSignal<AgentRun | null>(null);
+  const [panelOpen, setPanelOpen] = createSignal(false);
+  // Start-agent dialog state: target card + loaded agents/skills.
+  const [startDialogOpen, setStartDialogOpen] = createSignal(false);
+  const [startDialogCard, setStartDialogCard] = createSignal<KanbanCard | null>(
+    null,
+  );
+  const [startDialogAgents, setStartDialogAgents] = createSignal<Agent[]>([]);
+  const [startDialogSkills, setStartDialogSkills] = createSignal<
+    SkillManifest[]
+  >([]);
+  const [startAgentName, setStartAgentName] = createSignal("");
+  const [startSkills, setStartSkills] = createSignal<string[]>([]);
+  const [startBusy, setStartBusy] = createSignal(false);
 
-  // Ark UI Menu machine. Controlled `open` so we can open programmatically
-  // from Card's onContextMenu / Shift+F10 without a Menu.ContextTrigger
-  // (decision 4: no asChild, no extra DOM node conflicting with use:draggable).
+  function applyActiveRuns(runs: AgentRun[]) {
+    const map: Record<string, AgentRun> = {};
+    for (const r of runs) map[r.cardId] = r;
+    setActiveRuns(map);
+    // Refresh panelRun while the panel is open and the run is still active,
+    // so status/terminal fields stay live without a separate fetch.
+    if (panelOpen()) {
+      const pr = panelRun();
+      if (pr) {
+        const updated = map[pr.cardId];
+        if (updated && updated.id === pr.id) setPanelRun(updated);
+      }
+    }
+  }
+
+  /** Load active runs once (fallback/reconnect). */
+  async function loadActiveRuns() {
+    try {
+      const runs = await acpListActiveRuns();
+      applyActiveRuns(Array.isArray(runs) ? runs : []);
+    } catch (e) {
+      console.error("acp_list_active_runs failed:", acpErrorMessage(e));
+    }
+  }
+
+  // Initial load + push listener for active-runs changes.
+  onMount(() => {
+    void loadActiveRuns();
+
+    const unlistenPromise = safeListen<AcpActiveRunsChangedEvent>(
+      "acp:active_runs_changed",
+      (event) => {
+        applyActiveRuns(
+          Array.isArray(event.payload.runs) ? event.payload.runs : [],
+        );
+      },
+    );
+
+    onCleanup(() => {
+      unlistenPromise.then((fn) => fn());
+    });
+  });
+
+  /** Open the run panel for a card's run. Falls back to the latest run
+   * (any status) when no active run exists, so completed/failed runs can
+   * still be inspected instead of disappearing from the badge. */
+  async function openRunPanel(cardId: string) {
+    const active = activeRuns()[cardId];
+    if (active) {
+      setPanelRun(active);
+      setPanelOpen(true);
+      return;
+    }
+    try {
+      const latest = await acpLatestRunForCard(cardId);
+      if (latest) {
+        setPanelRun(latest);
+        setPanelOpen(true);
+      }
+    } catch (e) {
+      console.error("acp_latest_run_for_card failed:", acpErrorMessage(e));
+    }
+  }
+
+  /** Right-click → "Start agent…": open the start dialog for a card with a repo path. */
+  async function startAgentRun(card: KanbanCard) {
+    setStartDialogCard(card);
+    setStartDialogOpen(true);
+    setStartBusy(false);
+    try {
+      const [agents, skills] = await Promise.all([
+        acpListAgents(),
+        acpListSkills(),
+      ]);
+      setStartDialogAgents(agents);
+      setStartDialogSkills(skills);
+      const first = agents.find((a) => a.enabled);
+      setStartAgentName(first?.name ?? "");
+      setStartSkills(first?.skills ?? []);
+      if (!first) {
+        toaster.warning({
+          title: "No agents registered",
+          description: "Add an agent in Settings → Agents",
+        });
+      }
+    } catch (e) {
+      toaster.error({
+        title: "Could not load agents",
+        description: acpErrorMessage(e),
+      });
+      setStartDialogOpen(false);
+    }
+  }
+
+  /** Confirm the start dialog: create the run, then open its panel. */
+  async function confirmStartAgentRun() {
+    const card = startDialogCard();
+    const agent = startDialogAgents().find((a) => a.name === startAgentName());
+    if (!card || !agent) return;
+    setStartBusy(true);
+    try {
+      const run = await acpCreateRun(card.id, agent.name, startSkills());
+      setStartDialogOpen(false);
+      setActiveRuns((prev) => ({ ...prev, [card.id]: run }));
+      setPanelRun(run);
+      setPanelOpen(true);
+    } catch (e) {
+      toaster.error({
+        title: "Could not start agent",
+        description: acpErrorMessage(e),
+      });
+    } finally {
+      setStartBusy(false);
+    }
+  }
+
+  // Controlled Ark UI menu: no ContextTrigger, reactive anchor point for
+  // right-click / Shift+F10 and auto-reposition.
   const menuOpen = createMemo(() => currentlyMenuingCard() !== null);
   const menu = useMenu({
     onOpenChange: (details) => {
-      if (!details.open) setCurrentlyMenuingCard(null);
+      if (!details.open) {
+        // Restore focus to the card that owned the menu. The menu is
+        // controlled + has no MenuTrigger, so Ark UI can't restore focus
+        // automatically — without this, Escape sends focus to <body>.
+        // Item-select handlers clear `currentlyMenuingCard` before this
+        // callback runs, so we only refocus on dismiss (Escape / outside
+        // click), not after selecting an item (where focus moves to the
+        // edit modal / etc).
+        const card = currentlyMenuingCard();
+        setCurrentlyMenuingCard(null);
+        if (card) {
+          queueMicrotask(() => {
+            document
+              .querySelector<HTMLElement>(`[data-testid="card-${card.id}"]`)
+              ?.focus();
+          });
+        }
+      }
     },
-    positioning: { placement: 'bottom-start', gutter: 0 },
+    onPointerDownOutside: (e) => {
+      // Right-click on a card while the menu is open: don't close the menu.
+      // Card's onContextMenu handler updates the anchor point; we
+      // reposition via the effect below.
+      if (e.detail.contextmenu) {
+        e.preventDefault();
+      }
+    },
+    positioning: { placement: "bottom-start", gutter: 0 },
   });
   createEffect(() => {
     menu.api().setOpen(menuOpen());
@@ -128,6 +337,19 @@ export default function Board() {
   function openCardMenu(card: KanbanCard, point: { x: number; y: number }) {
     setMenuAnchorPoint(point);
     setCurrentlyMenuingCard(card);
+    // Reposition the menu at the new anchor point. On the first open, the
+    // machine's CONTROLLED.OPEN transition handles positioning. On a
+    // subsequent open (second right-click while menu is already open),
+    // the machine stays in "open" state and doesn't reposition — so we
+    // explicitly call reposition. setTimeout(0) defers past the
+    // machine's own open-transition reposition (which would overwrite
+    // our position) and past any pending CLOSE microtasks from
+    // pointerdown-outside.
+    setTimeout(() => {
+      menu.api().reposition({
+        getAnchorRect: () => ({ width: 0, height: 0, ...point }),
+      });
+    }, 0);
   }
 
   /** Guarded card-switch: if the current EditModal is dirty, show a
@@ -145,11 +367,11 @@ export default function Board() {
     if (existingId !== null) toaster.dismiss(existingId);
     setPendingSwitchCard(card);
     const id = toaster.create({
-      title: 'Discard unsaved changes?',
-      type: 'warning',
+      title: "Discard unsaved changes?",
+      type: "warning",
       duration: Infinity,
       action: {
-        label: 'Discard',
+        label: "Discard",
         onClick: () => {
           toaster.dismiss(id);
           setPendingSwitchToastId(null);
@@ -164,71 +386,114 @@ export default function Board() {
     setPendingSwitchToastId(id);
   }
 
-  // When the anchor point or target card changes while the menu is open,
-  // reposition the menu at the new point. This handles the second
-  // right-click case: the machine stays open (controlled), and we move it.
-  createEffect(() => {
-    const card = currentlyMenuingCard();
-    if (!card) return;
-    const point = menuAnchorPoint();
-    // Reposition uses anchorPoint from the event point; setting it via
-    // reposition() with getAnchorRect keeps the menu pinned to the cursor.
-    menu.api().reposition({ getAnchorRect: () => ({ width: 0, height: 0, ...point }) });
-  });
+  // Repositioning on second right-click is handled in `openCardMenu`
+  // above (setTimeout(0) reposition call). No separate effect needed.
 
   /** Fetch one column's cards from the database and splice them into the
    * central cards signal. When `withSkeletons` is true, sets the column's
    * loading flag so Column shows placeholders during the fetch. Used for
    * initial load, sync reloads (skeletons), and error reverts (no skeletons). */
   async function fetchColumn(column: ColumnId, withSkeletons: boolean) {
-    if (withSkeletons) setColumnLoading((prev) => ({ ...prev, [column]: true }));
+    if (withSkeletons) {
+      setColumnLoading((prev) => ({ ...prev, [column]: true }));
+    }
     try {
       const fresh = await listCardsByColumn(column);
-      setCards((prev) => [...prev.filter((c) => c.column !== column), ...fresh]);
+      setCards((
+        prev,
+      ) => [...prev.filter((c) => c.column !== column), ...fresh]);
     } finally {
       setColumnLoading((prev) => ({ ...prev, [column]: false }));
     }
   }
 
-  // Sync reload: re-fetch every column with skeletons visible.
-  reloadBoard = () => {
-    for (const col of COLUMNS) void fetchColumn(col.id, true);
+  // Sync reload: re-fetch every column with skeletons visible. Awaits all
+  // three fetches so callers (App.finishSync) know when the board is stable.
+  reloadBoard = async () => {
+    await Promise.all(COLUMNS.map((col) => fetchColumn(col.id, true)));
   };
   onMount(() => {
-    void listTreeSources().then(setTreeSources);
-    for (const col of COLUMNS) void fetchColumn(col.id, true);
+    void listTreeSources().then(setTreeSources).catch((e) =>
+      toaster.error({
+        title: "Could not load tree sources",
+        description: acpErrorMessage(e),
+      })
+    );
+    for (const col of COLUMNS) {
+      void fetchColumn(col.id, true).catch((e) =>
+        toaster.error({
+          title: `Could not load column ${col.id}`,
+          description: acpErrorMessage(e),
+        })
+      );
+    }
   });
 
   async function addCard(title: string, column: ColumnId) {
     // Backend returns the real card (UUID, position, timestamps) — append it
     // directly. No optimistic guess needed; the call is fast and gives us truth.
-    const card = await createLocalCard(title, column);
-    setCards((prev) => [...prev, card]);
+    try {
+      const card = await createLocalCard(title, column);
+      setCards((prev) => [...prev, card]);
+    } catch (e) {
+      toaster.error({
+        title: "Add card failed",
+        description: acpErrorMessage(e),
+      });
+    }
   }
 
-  async function editCard(id: string, title: string, description: string, priority: Priority, treeSourceId: string) {
+  async function editCard(
+    id: string,
+    title: string,
+    description: string,
+    priority: Priority,
+    treeSourceId: string,
+  ) {
     // Optimistic: update the signal immediately so the card reflects the edit
     // without waiting on the backend round-trip.
     setCards((prev) =>
       prev.map((c) =>
         c.id === id
-          ? { ...c, title, description, priority, treeSourceId: treeSourceId || undefined, updatedAt: new Date().toISOString() }
-          : c,
-      ),
+          ? {
+            ...c,
+            title,
+            description,
+            priority,
+            treeSourceId: treeSourceId || undefined,
+            updatedAt: new Date().toISOString(),
+          }
+          : c
+      )
     );
     try {
       await updateCard(id, { title, description, priority, treeSourceId });
     } catch (e) {
       // Revert: re-fetch the card's column to restore true state.
       const card = cards().find((c) => c.id === id);
-      if (card) void fetchColumn(card.column, false);
-      toaster.error({ title: 'Edit failed', description: e instanceof Error ? e.message : String(e) });
+      if (card) {
+        void fetchColumn(card.column, false).catch((err) =>
+          toaster.error({
+            title: "Revert failed",
+            description: acpErrorMessage(err),
+          })
+        );
+      }
+      toaster.error({ title: "Edit failed", description: acpErrorMessage(e) });
     }
   }
 
   function handleEditSave(result: EditModalResult) {
     const card = currentlyEditingCard();
-    if (card) void editCard(card.id, result.title, result.description, result.priority, result.treeSourceId);
+    if (card) {
+      void editCard(
+        card.id,
+        result.title,
+        result.description,
+        result.priority,
+        result.treeSourceId,
+      );
+    }
     setCurrentlyEditingCard(null);
   }
 
@@ -240,8 +505,18 @@ export default function Board() {
       await deleteCardDb(id);
     } catch (e) {
       // Revert: re-fetch the card's column to restore it.
-      if (card) void fetchColumn(card.column, false);
-      toaster.error({ title: 'Delete failed', description: e instanceof Error ? e.message : String(e) });
+      if (card) {
+        void fetchColumn(card.column, false).catch((err) =>
+          toaster.error({
+            title: "Revert failed",
+            description: acpErrorMessage(err),
+          })
+        );
+      }
+      toaster.error({
+        title: "Delete failed",
+        description: acpErrorMessage(e),
+      });
     }
   }
 
@@ -252,15 +527,30 @@ export default function Board() {
     // Optimistic: flip the card to the target column immediately so the drag
     // feels instant. Position will be corrected by the backend (appends to end).
     setCards((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, column, updatedAt: new Date().toISOString() } : c)),
+      prev.map((
+        c,
+      ) => (c.id === id
+        ? { ...c, column, updatedAt: new Date().toISOString() }
+        : c)
+      )
     );
     try {
       await moveCardDb(id, column);
     } catch (e) {
       // Revert: re-fetch both affected columns.
-      void fetchColumn(oldColumn, false);
-      void fetchColumn(column, false);
-      toaster.error({ title: 'Move failed', description: e instanceof Error ? e.message : String(e) });
+      void fetchColumn(oldColumn, false).catch((err) =>
+        toaster.error({
+          title: "Revert failed",
+          description: acpErrorMessage(err),
+        })
+      );
+      void fetchColumn(column, false).catch((err) =>
+        toaster.error({
+          title: "Revert failed",
+          description: acpErrorMessage(err),
+        })
+      );
+      toaster.error({ title: "Move failed", description: acpErrorMessage(e) });
     }
   }
 
@@ -279,9 +569,15 @@ export default function Board() {
     const src = treeSources().find((s) => s.id === id);
     if (!src) return;
     try {
-      await invoke('open_in_editor', { path: src.path, command: src.editorCommand });
+      await invoke("open_in_editor", {
+        path: src.path,
+        command: src.editorCommand,
+      });
     } catch (e) {
-      console.error('open_in_editor failed:', e);
+      toaster.error({
+        title: "Open in editor failed",
+        description: acpErrorMessage(e),
+      });
     }
   }
 
@@ -302,7 +598,10 @@ export default function Board() {
   return (
     <DragDropContext onDragEnd={handleDragEnd}>
       <DragDropSensors>
-        <main id="main-board" class="board-scroll flex-1 flex gap-3 p-3 overflow-y-auto bg-base">
+        <main
+          id="main-board"
+          class="board-scroll flex-1 grid grid-cols-1 sm:grid-cols-3 gap-8 p-4 sm:p-8 overflow-y-auto bg-base"
+        >
           <For each={COLUMNS}>
             {(column) => (
               <Column
@@ -314,6 +613,8 @@ export default function Board() {
                 onOpenEdit={requestEditCard}
                 onDelete={deleteCard}
                 onContextMenuOpen={openCardMenu}
+                activeRuns={activeRuns}
+                onAgentBadgeClick={(cardId) => void openRunPanel(cardId)}
               />
             )}
           </For>
@@ -324,18 +625,48 @@ export default function Board() {
         card={currentlyEditingCard()}
         treeSources={treeSources}
         open={currentlyEditingCard() !== null}
-        onOpenChange={(open) => { if (!open) setCurrentlyEditingCard(null); }}
+        onOpenChange={(open) => {
+          if (!open) setCurrentlyEditingCard(null);
+        }}
         onSave={handleEditSave}
         onDirtyChange={setIsEditingDirty}
       />
       <Menu.RootProvider value={menu}>
         <Menu.Positioner>
-          <Menu.Content data-testid="card-context-menu" class="min-w-[10rem] bg-surface border border-border-subtle rounded-[var(--radius-card)] shadow-2xl py-1">
-            <Menu.Item value="edit" onSelect={editFromMenu} data-testid="menu-item-edit" class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer">
+          <Menu.Content
+            data-testid="card-context-menu"
+            class="min-w-[10rem] bg-surface border border-border-subtle rounded-[var(--radius-card)] shadow-2xl py-1"
+          >
+            <Menu.Item
+              value="edit"
+              onSelect={editFromMenu}
+              data-testid="menu-item-edit"
+              class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer"
+            >
               Edit
             </Menu.Item>
             <Show when={currentlyMenuingCard()?.treeSourceId}>
-              <Menu.Item value="editor" onSelect={openInEditor} data-testid="menu-item-editor" class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer">
+              <Menu.Item
+                value="agent"
+                data-testid="menu-item-agent"
+                disabled={!!activeRuns()[currentlyMenuingCard()?.id ?? ""]}
+                onSelect={() => {
+                  const card = currentlyMenuingCard();
+                  if (card) void startAgentRun(card);
+                  setCurrentlyMenuingCard(null);
+                }}
+                class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer data-[disabled]:opacity-40"
+              >
+                Start agent…
+              </Menu.Item>
+            </Show>
+            <Show when={currentlyMenuingCard()?.treeSourceId}>
+              <Menu.Item
+                value="editor"
+                onSelect={openInEditor}
+                data-testid="menu-item-editor"
+                class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer"
+              >
                 Open in editor
               </Menu.Item>
             </Show>
@@ -358,6 +689,88 @@ export default function Board() {
           </Menu.Content>
         </Menu.Positioner>
       </Menu.RootProvider>
+      <AgentRunPanel
+        open={panelOpen()}
+        onOpenChange={setPanelOpen}
+        run={panelRun()}
+      />
+      <Show when={startDialogOpen()}>
+        <Portal>
+          <div class="fixed inset-0 z-50 bg-black/50" />
+          <div class="fixed inset-0 z-50 flex items-center justify-center px-4">
+            <div class="relative w-full max-w-md bg-surface rounded-[var(--radius-card)] border border-border-subtle shadow-2xl p-5 flex flex-col gap-4">
+              <div class="flex items-center justify-between">
+                <h2 class="text-base font-bold text-ink">
+                  Start Agent — {startDialogCard()?.title}
+                </h2>
+                <button
+                  type="button"
+                  class="text-xl text-ink-secondary hover:text-ink leading-none px-1"
+                  aria-label="Close"
+                  onClick={() => setStartDialogOpen(false)}
+                >
+                  ×
+                </button>
+              </div>
+              <label
+                class="block text-xs font-semibold text-ink-secondary"
+                for="start-agent-picker"
+              >
+                Agent
+              </label>
+              <select
+                id="start-agent-picker"
+                class="w-full text-sm rounded px-2 py-1.5 bg-base text-ink border border-border-subtle outline-none focus:border-accent"
+                value={startAgentName()}
+                onChange={(e) => {
+                  const name = e.currentTarget.value;
+                  setStartAgentName(name);
+                  const agent = startDialogAgents().find((a) =>
+                    a.name === name
+                  );
+                  setStartSkills(agent?.skills ?? []);
+                }}
+              >
+                <For each={startDialogAgents()}>
+                  {(agent) => (
+                    <option value={agent.name} disabled={!agent.enabled}>
+                      {agent.name}
+                      {agent.enabled ? "" : " (disabled)"}
+                    </option>
+                  )}
+                </For>
+              </select>
+              <Show when={startDialogSkills().length > 0 && startAgentName()}>
+                <SkillPicker
+                  available={startDialogSkills()}
+                  agentSkills={startDialogAgents().find((a) =>
+                    a.name === startAgentName()
+                  )?.skills ?? []}
+                  selected={startSkills()}
+                  onChange={setStartSkills}
+                />
+              </Show>
+              <div class="flex gap-2 justify-end">
+                <button
+                  type="button"
+                  class="px-3 py-1.5 text-sm font-medium rounded text-ink-secondary hover:bg-elevated transition-colors"
+                  onClick={() => setStartDialogOpen(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  class="px-3 py-1.5 text-sm font-medium rounded bg-accent hover:bg-accent-hover text-base transition-colors disabled:opacity-50"
+                  disabled={!startAgentName() || startBusy()}
+                  onClick={() => void confirmStartAgentRun()}
+                >
+                  {startBusy() ? "Starting…" : "Run agent"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </Portal>
+      </Show>
     </DragDropContext>
   );
 }

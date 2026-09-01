@@ -1,10 +1,10 @@
-import { For, Show, createEffect, createSignal } from 'solid-js';
-import { Portal } from 'solid-js/web';
-import { Dialog } from '@ark-ui/solid/dialog';
-import type { SourceInstance } from '../types.ts';
-import { deleteAllSourceCards, listSources } from '../db.ts';
-import { reload } from './Board.tsx';
-import { toaster } from './ui/toaster.ts';
+import { createEffect, createSignal, For, Show } from "solid-js";
+import { Portal } from "solid-js/web";
+import { Dialog } from "@ark-ui/solid/dialog";
+import type { SourceInstance } from "../types.ts";
+import { deleteAllSourceCards, listSources } from "../db.ts";
+import { reload } from "./Board.tsx";
+import { toaster } from "./ui/toaster.ts";
 
 interface ClearSourceModalProps {
   open: boolean;
@@ -24,9 +24,8 @@ export default function ClearSourceModal(props: ClearSourceModalProps) {
       try {
         setSources(await listSources());
       } catch (e) {
-        // Action-result error → toast (decision 8).
         toaster.error({
-          title: 'Could not load sources',
+          title: "Could not load sources",
           description: e instanceof Error ? e.message : String(e),
         });
       }
@@ -38,21 +37,21 @@ export default function ClearSourceModal(props: ClearSourceModalProps) {
   async function handleConfirm() {
     const src = selected();
     if (!src) {
-      // Form validation → inline `<p role="alert">` (decision 8).
-      setError('Pick a source to clear.');
+      setError("Pick a source to clear.");
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      await deleteAllSourceCards(src.sourceType);
+      // Rust command takes the source instance id (`source_id`) and resolves
+      // it to the source_type inside one transaction.
+      await deleteAllSourceCards(src.id);
       await reload();
       props.onOpenChange(false);
-      toaster.success({ title: 'Source cleared', description: src.label });
+      toaster.success({ title: "Source cleared", description: src.label });
     } catch (e) {
-      // Action-result error → toast (decision 8).
       toaster.error({
-        title: 'Clear failed',
+        title: "Clear failed",
         description: e instanceof Error ? e.message : String(e),
       });
     } finally {
@@ -68,7 +67,14 @@ export default function ClearSourceModal(props: ClearSourceModalProps) {
       closeOnEscape
       closeOnInteractOutside
       aria-label="Clear source cards"
-      onOpenChange={(e) => props.onOpenChange(e.open)}
+      onOpenChange={(e) => {
+        // Reset the selection when the dialog closes so a reopen starts clean.
+        if (!e.open) {
+          setSelectedId(null);
+          setError(null);
+        }
+        props.onOpenChange(e.open);
+      }}
     >
       <Portal>
         <Dialog.Backdrop class="fixed inset-0 z-50 bg-black/50" />
@@ -91,7 +97,8 @@ export default function ClearSourceModal(props: ClearSourceModalProps) {
 
             <div class="p-4 flex flex-col gap-3">
               <p class="text-xs text-ink-secondary">
-                Pick a source to delete every card it sourced plus its sync snapshots. Local cards stay.
+                Pick a source to delete every card it sourced plus its sync
+                snapshots. Local cards stay.
               </p>
 
               <Show when={sources().length === 0}>
@@ -105,8 +112,8 @@ export default function ClearSourceModal(props: ClearSourceModalProps) {
                       <label
                         class="flex items-center gap-2 text-sm text-ink rounded px-2 py-1.5 border cursor-pointer"
                         classList={{
-                          'border-accent bg-accent/10': selectedId() === src.id,
-                          'border-border-subtle': selectedId() !== src.id,
+                          "border-accent bg-accent/10": selectedId() === src.id,
+                          "border-border-subtle": selectedId() !== src.id,
                         }}
                       >
                         <input
@@ -116,7 +123,9 @@ export default function ClearSourceModal(props: ClearSourceModalProps) {
                           checked={selectedId() === src.id}
                           onChange={() => setSelectedId(src.id)}
                         />
-                        <span class="min-w-0 truncate font-semibold">{src.label}</span>
+                        <span class="min-w-0 truncate font-semibold">
+                          {src.label}
+                        </span>
                         <span class="text-[10px] font-mono text-ink-secondary bg-base/60 rounded px-1 py-0.5">
                           {src.sourceType}
                         </span>
@@ -126,7 +135,9 @@ export default function ClearSourceModal(props: ClearSourceModalProps) {
                 </For>
               </ul>
 
-              {error() && <p class="text-sm text-p-urgent" role="alert">{error()}</p>}
+              {error() && (
+                <p class="text-sm text-p-urgent" role="alert">{error()}</p>
+              )}
 
               <div class="flex gap-2 justify-end">
                 <button
@@ -142,7 +153,7 @@ export default function ClearSourceModal(props: ClearSourceModalProps) {
                   disabled={!selected() || busy()}
                   onClick={() => void handleConfirm()}
                 >
-                  {busy() ? 'Clearing…' : 'Clear'}
+                  {busy() ? "Clearing…" : "Clear"}
                 </button>
               </div>
             </div>

@@ -1,23 +1,29 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
+pub mod cli;
+pub mod db;
 mod editor;
-mod mcp;
-mod tray;
-mod db;
-mod source;
+pub mod error;
 mod mapping;
+mod mcp;
+pub mod runner;
+pub mod skills;
+mod source;
 mod sync;
+#[cfg(test)]
+pub mod test_utils;
+mod tray;
+mod worktree;
 
 use tauri::{Manager, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .manage(mcp::McpState::default())
+        .manage(runner::RunnerState::default())
         .on_window_event(|window, event| {
             // Intercept the close button: when `close_to_tray` is enabled (the
-            // default), hide the window instead of letting the app quit. The
-            // user quits via the tray menu's "Quit" item.
+            // default), hide the window instead of quitting. The user quits
+            // via the tray menu's "Quit" item.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
                 let close_to_tray = read_setting(app, "close_to_tray")
@@ -33,6 +39,18 @@ pub fn run() {
             // Run DB migrations before anything else touches the database.
             let conn = db::open_db(app.handle())?;
             db::run_migrations(&conn)?;
+            // Reap stale active runs left by a crashed/killed tasker
+            // (fire-and-forget — best-effort, never blocks startup).
+            if let Err(e) = runner::cleanup_dangling(&conn) {
+                eprintln!("cleanup_dangling on startup failed: {e}");
+            }
+            drop(conn);
+
+            // Wire the AppHandle into the run core so it can push events.
+            let _ = app
+                .state::<runner::RunnerState>()
+                .core
+                .set_app(app.handle().clone());
 
             // Install the system tray icon + menu.
             tray::install(app.handle())?;
@@ -55,9 +73,9 @@ pub fn run() {
             db::cards::update_card,
             db::cards::move_card,
             db::cards::delete_card,
+            db::cards::is_card_locked_cmd,
             db::cards::delete_all_source_cards,
             db::cards::get_card_by_source_ref,
-            db::cards::upsert_card_from_sync,
             db::settings::get_setting,
             db::settings::set_setting,
             db::settings::get_all_settings,
@@ -81,7 +99,30 @@ pub fn run() {
             source::resolve_conflicts,
             source::preview_jql,
             mcp::mcp_apply,
-            mcp::mcp_status
+            mcp::mcp_status,
+            runner::acp_list_agents,
+            runner::acp_register_agent,
+            runner::acp_update_agent,
+            runner::acp_delete_agent,
+            runner::acp_list_skills,
+            runner::acp_list_active_runs,
+            runner::acp_create_run,
+            runner::acp_resume_run,
+            runner::acp_get_run,
+            runner::acp_get_run_for_card,
+            runner::acp_latest_run_for_card,
+            runner::acp_list_updates,
+            runner::acp_has_updates,
+            runner::acp_list_runs,
+            runner::acp_list_recent_runs,
+            runner::acp_cleanup,
+            runner::acp_cancel_run,
+            runner::acp_respond_permission,
+            runner::acp_send_followup,
+            runner::acp_diff_main,
+            runner::acp_merge,
+            runner::acp_remove_worktree,
+            runner::acp_delete_run
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -96,12 +137,12 @@ pub fn read_setting<R: tauri::Runtime>(app: &tauri::AppHandle<R>, key: &str) -> 
     if !db_path.exists() {
         return None;
     }
-    let conn = rusqlite::Connection::open(&db_path).ok()?;
-    conn.query_row(
-        "SELECT value FROM settings WHERE key = ?1",
-        [key],
-        |r| r.get::<_, String>(0),
-    )
+    // Use the shared opener so WAL + busy_timeout + FK pragmas match the
+    // rest of the app (avoids locked/FK-disabled reads).
+    let conn = db::open_db_path(&db_path).ok()?;
+    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+        r.get::<_, String>(0)
+    })
     .ok()
 }
 
