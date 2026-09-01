@@ -1,2 +1,2 @@
-//! Test utilities for the ACP runner.
+//! ACP runner test utilities.
 pub mod mock_acp;

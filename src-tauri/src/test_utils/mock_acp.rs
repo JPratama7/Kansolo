@@ -1,6 +1,6 @@
 //! Minimal ACP agent mock for runner end-to-end tests.
 //!
-//! The runner tests spawn the lib test binary itself (`std::env::current_exe()`)
+//! Runner tests spawn the lib test binary itself (`std::env::current_exe()`)
 //! with `MOCK_ACP_BINARY=1` and `--exact mock_acp_server`. The mock then runs
 //! the JSON-RPC loop on stdio: initialize, session/new, session/prompt,
 //! session/cancel. Env knobs: `MOCK_ACP_UPDATES` (chunks per prompt),
@@ -15,11 +15,11 @@ pub fn run_mock_server() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
-    // When set, all chunks share one messageId (simulating a multi-chunk
-    // agent message) instead of getting a unique id each.
+    // When set, all chunks share one messageId (a multi-chunk agent
+    // message) instead of getting a unique id each.
     let same_msg = std::env::var("MOCK_ACP_SAME_MSG").is_ok();
     // Write own PID to a file so the hard-kill test can check the process
-    // is dead after cancel. Best-effort — ignore errors.
+    // is dead after cancel. Best-effort.
     if let Ok(pid_file) = std::env::var("MOCK_ACP_PID_FILE") {
         let _ = std::fs::write(&pid_file, std::process::id().to_string());
     }
@@ -62,8 +62,8 @@ pub fn run_mock_server() {
             }
             "session/prompt" => {
                 if hang {
-                    // Never answer — the cancel path must break the read
-                    // loop via the token + session/cancel notification.
+                    // Never answer — cancel must break the read loop via
+                    // the token + session/cancel notification.
                     std::thread::sleep(std::time::Duration::from_secs(120));
                     break;
                 }
