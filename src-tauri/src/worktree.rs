@@ -2,7 +2,7 @@ use crate::error::AcpError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// A created worktree: path on disk + branch name + the repo's default
+/// Created worktree: path on disk + branch name + the repo's default
 /// branch (resolved at creation, used for diff/merge targets).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -12,7 +12,7 @@ pub struct Worktree {
     pub default_branch: String,
 }
 
-/// Result of merging an agent branch back into main.
+/// Merge result for folding an agent branch back into main.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeResult {
@@ -231,8 +231,8 @@ impl WorktreeManager {
         self.check_merge_in_progress()?;
         let branch = Self::sanitize_branch(card_id);
         let default_branch = self.resolve_default_branch().await;
-        // Ensure the main worktree is on the default branch before merging
-        // so the merge target is deterministic (not whatever HEAD happens to be).
+        // Check out the default branch first so the merge target is
+        // deterministic, not whatever HEAD happens to be.
         let checkout = tokio::process::Command::new("git")
             .arg("checkout")
             .arg(&default_branch)
