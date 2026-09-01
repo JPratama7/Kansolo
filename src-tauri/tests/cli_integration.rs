@@ -2,7 +2,7 @@
 //!
 //! These tests verify the DB/skill/runner operations that the CLI binary
 //! relies on, using the same in-memory test DB pattern as the inline tests.
-//! The CLI binary itself is a thin wrapper over `kansolo_lib` functions.
+//! CLI binary itself is a thin wrapper over `kansolo_lib` functions.
 
 use kansolo_lib::db::{agent_runs, agents, cards, now_iso};
 use kansolo_lib::error::AcpError;
