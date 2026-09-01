@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::path::PathBuf;
 
-/// Metadata for a skill, parsed from `SKILL.md` frontmatter.
+/// Skill metadata, parsed from `SKILL.md` frontmatter.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillManifest {
