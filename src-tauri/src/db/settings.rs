@@ -263,7 +263,7 @@ pub async fn delete_tree_source(app: AppHandle, id: String) -> Result<(), String
 // ---- Source instance CRUD ---------------------------------------------------
 //
 // `sources` rows store `config_json` and `status_mapping_json` as JSON text.
-// The commands below deserialize those into `serde_json::Value` /
+// Commands below deserialize those into `serde_json::Value` /
 // `StatusMapping` for the API surface, and re-serialize on write.
 
 /// Sentinel substituted for `config.token` on the read path. The TS settings
@@ -287,13 +287,13 @@ fn redact_config_token(config: &mut Value) {
 }
 
 /// Map a `sources` row into a [`SourceInstance`], parsing the JSON text columns.
-/// A corrupt `config_json` or `status_mapping_json` value is surfaced as
+/// Surface a corrupt `config_json` or `status_mapping_json` as
 /// `rusqlite::Error::FromSqlConversionFailure` rather than silently defaulting
 /// to an empty config — silent defaults would mask a damaged row and let the
 /// UI show a source that's secretly lost its config.
 ///
-/// The `config.token` field is redacted (see [`redact_config_token`]) so the
-/// plaintext never reaches the UI via the read path. The edit form relies on
+/// `config.token` is redacted (see [`redact_config_token`]) so the
+/// plaintext never reaches the UI via the read path. Edit forms rely on
 /// the TS placeholder model to preserve the stored token when the field is
 /// untouched.
 fn parse_source_row(row: &rusqlite::Row, redact: bool) -> rusqlite::Result<SourceInstance> {
@@ -435,8 +435,8 @@ pub async fn update_source(
     enabled: bool,
 ) -> Result<(), String> {
     let conn = open_db(&app)?;
-    // If the frontend round-tripped the redacted token sentinel, preserve
-    // the stored token instead of overwriting it with the mask.
+    // Frontend may send back the redacted token sentinel; preserve the
+    // stored token instead of overwriting it with the mask.
     let config_has_redacted = config
         .get("token")
         .and_then(|v| v.as_str())
@@ -471,9 +471,9 @@ pub async fn update_source(
 
 /// Delete a source instance by id.
 ///
-/// This removes the `sources` row (config + status mapping) only. Cards
-/// already imported from the source are kept — they retain their `source`
-/// and `source_ref` fields, but will no longer be synced. Snapshots in
+/// Removes the `sources` row (config + status mapping) only. Cards already
+/// imported from the source are kept — they retain their `source` and
+/// `source_ref` fields, but will no longer be synced. Snapshots in
 /// `external_snapshots` are also left in place (harmless stale rows).
 #[tauri::command]
 pub async fn delete_source(app: AppHandle, id: String) -> Result<(), String> {
@@ -544,7 +544,7 @@ mod source_instance_parse_tests {
         );
     }
 
-    /// The read path (`list_sources` / `get_source`) must never surface the
+    /// Read path (`list_sources` / `get_source`) must never surface the
     /// plaintext Jira token. `row_to_source_instance` masks `config.token`
     /// with the [`REDACTED_TOKEN`] sentinel.
     #[test]
@@ -576,7 +576,7 @@ mod source_instance_parse_tests {
 
 /// CRUD round-trip tests for the `sources` table.
 ///
-/// The `add_source` / `update_source` / `delete_source` / `list_sources` /
+/// `add_source` / `update_source` / `delete_source` / `list_sources` /
 /// `get_source` Tauri commands take an [`AppHandle`], which can't be
 /// constructed in a unit test. These tests exercise the same SQL contract
 /// those commands run against `test_db()`, then read back through

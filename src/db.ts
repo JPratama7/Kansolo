@@ -19,7 +19,7 @@ export async function listCards(): Promise<KanbanCard[]> {
   return invoke<KanbanCard[]>("list_cards");
 }
 
-/** Cards for a single column, ordered by position. Used by the per-column
+/** Cards for one column, ordered by position. Drives the per-column
  * lazy fetch so each column loads (and shows its loading state) on its own. */
 export async function listCardsByColumn(
   column: ColumnId,
@@ -69,7 +69,7 @@ export async function isCardLocked(id: string): Promise<boolean> {
   return invoke<boolean>("is_card_locked_cmd", { id });
 }
 
-/** Remove every card sourced from a source instance (looked up by its
+/** Delete every card sourced from a source instance (looked up by its
  * `sources.id`) and its sync snapshots. Local cards stay. The Rust command
  * resolves the instance id → source_type inside one transaction. */
 export async function deleteAllSourceCards(sourceId: string): Promise<void> {
@@ -115,7 +115,7 @@ export async function listSourceTypes(): Promise<SourceTypeMeta[]> {
   return invoke<SourceTypeMeta[]>("list_source_types");
 }
 
-/** Run a sync against one source instance; returns conflicts + unmapped statuses. */
+/** Sync one source instance; returns conflicts + unmapped statuses. */
 export async function syncSource(sourceId: string): Promise<SyncResult> {
   return invoke<SyncResult>("sync_source", { sourceId });
 }
@@ -164,7 +164,7 @@ export async function deleteTreeSource(id: string): Promise<void> {
   await invoke("delete_tree_source", { id });
 }
 
-/** Extract a human-readable message from an `AcpError` or thrown value. */
+/** Pull a human-readable message from an `AcpError` or thrown value. */
 export function acpErrorMessage(e: unknown): string {
   if (
     e && typeof e === "object" && "message" in e &&
@@ -235,7 +235,7 @@ export async function acpGetRunForCard(
 }
 
 /** Most recent run for a card, regardless of status (active or terminal).
- * Used by the UI to render the latest run badge/panel when no active run exists. */
+ * UI renders the latest run badge/panel when no active run exists. */
 export async function acpLatestRunForCard(
   cardId: string,
 ): Promise<AgentRun | null> {
