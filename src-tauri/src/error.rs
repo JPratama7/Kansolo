@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-/// Error codes used across all Tauri commands and the CLI.
+/// Error codes shared by all Tauri commands and the CLI.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum AcpErrorCode {
@@ -10,8 +10,7 @@ pub enum AcpErrorCode {
     Validation,
     Conflict,
     /// Delete blocked because the agent still has run rows. The agent
-    /// name is included in `message`; callers can also pass
-    /// `delete_runs=true` to cascade.
+    /// name goes in `message`; callers can pass `delete_runs=true` to cascade.
     AgentHasRuns,
 }
 
@@ -56,8 +55,8 @@ impl AcpError {
             message: msg.to_string(),
         }
     }
-    /// Delete blocked by existing runs. `name` is the agent name; the
-    /// caller should suggest `delete_runs=true` to cascade.
+    /// Delete blocked by existing runs. `name` is the agent name;
+    /// suggest `delete_runs=true` to cascade.
     pub fn agent_has_runs(name: impl ToString) -> Self {
         Self {
             code: AcpErrorCode::AgentHasRuns,
@@ -77,7 +76,7 @@ impl std::fmt::Display for AcpError {
 
 impl std::error::Error for AcpError {}
 
-/// Convert `Result<T, String>` errors from DB and utility calls into
+/// Lift `Result<T, String>` errors from DB/utility calls into
 /// `Result<T, AcpError>` so callers can use `?` uniformly.
 impl From<String> for AcpError {
     fn from(s: String) -> Self {
