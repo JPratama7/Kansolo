@@ -19,13 +19,13 @@ impl StatusMapping {
     }
 }
 
-/// Unmatched statuses land here (catch-all rule).
+/// Catch-all column for unmatched statuses.
 pub const CATCH_ALL_COLUMN: &str = "backlog";
 
 /// Canonical column ids in priority order.
 pub const ALL_COLUMNS: [&str; 3] = ["backlog", "ongoing", "done"];
 
-/// Default when nothing matches and the input is empty/unknown.
+/// Default priority when nothing matches or the input is empty/unknown.
 pub const DEFAULT_PRIORITY: &str = "medium";
 
 /// Synonyms for each priority, matched case-insensitively against the Jira
