@@ -70,15 +70,15 @@ test("EditModal: dirty close shows confirmation toast, Discard closes modal", as
 
   // Modal is rendered with open=true, but Ark UI uses lazyMount so the
   // portaled content appears after an effect flush. The form defaults to
-  // preview mode, so we must switch to the Edit tab to reveal the Title
-  // input before typing.
+  // preview mode, so switch to the Edit tab to reveal the Title input
+  // before typing.
   await waitFor(() => {
     if (!baseElement.querySelector('[data-value="edit"]')) {
       throw new Error("EditModal form not mounted yet");
     }
   });
-  // Click the Edit tab trigger directly (getByText is unreliable here because
-  // Ark UI wraps the label in extra spans).
+  // Click the Edit tab trigger directly (getByText is unreliable here
+  // because Ark UI wraps the label in extra spans).
   fireEvent.click(
     baseElement.querySelector('[data-value="edit"]') as HTMLElement,
   );
@@ -105,7 +105,7 @@ test("EditModal: dirty close shows confirmation toast, Discard closes modal", as
       throw new Error("confirmation toast not rendered");
     }
   });
-  // The dirty guard (requestClose) shows the toast and does NOT call
+  // Dirty guard (requestClose) shows the toast and does NOT call
   // onOpenChange(false), so the controlled open signal stays true. Ark
   // UI's internal state may briefly flicker in happy-dom, but the
   // controlled prop is the source of truth.

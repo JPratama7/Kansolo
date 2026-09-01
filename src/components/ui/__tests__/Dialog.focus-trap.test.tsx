@@ -40,7 +40,7 @@ test("Dialog: Tab stays within Content; close restores focus to trigger", async 
     | null;
   if (!trig) throw new Error("Dialog.Trigger not rendered");
 
-  // Before open: Content is absent (lazyMount + unmountOnExit).
+  // Pre-open: Content is absent (lazyMount + unmountOnExit).
   if (document.body.querySelector('[data-testid="content"]')) {
     throw new Error("Dialog.Content should not be mounted before open");
   }
@@ -70,9 +70,10 @@ test("Dialog: Tab stays within Content; close restores focus to trigger", async 
     throw new Error("focus escaped Dialog.Content on Tab (trap failed)");
   }
 
-  // Close via Escape and assert focus returns to the trigger. happy-dom does
-  // not reliably restore focus, so we accept activeElement===trigger OR fall
-  // back to the structural guarantee (open===false + trigger still present).
+  // Close via Escape and assert focus returns to the trigger. happy-dom
+  // does not reliably restore focus, so we accept activeElement===trigger
+  // OR fall back to the structural guarantee (open===false + trigger still
+  // present).
   await fireEvent.keyDown(content, { key: "Escape" });
   await new Promise((r) => setTimeout(r, 10));
   if (open()) throw new Error("Escape did not close the dialog");
