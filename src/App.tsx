@@ -1,5 +1,4 @@
 import { createSignal, onMount, Show } from "solid-js";
-import { initTheme } from "./theme.ts";
 import { Portal } from "solid-js/web";
 import { Toast, Toaster } from "@ark-ui/solid/toast";
 import Board, { reload } from "./components/Board.tsx";
@@ -34,7 +33,7 @@ function App() {
   const [syncError, setSyncError] = createSignal<string | null>(null);
   const [lastSynced, setLastSynced] = createSignal<string | null>(null);
   const [conflicts, setConflicts] = createSignal<SyncConflict[] | null>(null);
-  // Conflicts pause the sync loop; this state is needed to resume afterward.
+  // Conflicts pause the sync loop; track the source id so we can resume.
   const [pendingSourceId, setPendingSourceId] = createSignal<string | null>(
     null,
   );
@@ -59,10 +58,9 @@ function App() {
 
   onMount(async () => {
     setLastSynced(await getSetting("last_synced_at"));
-    void initTheme();
   });
 
-  /** Sync a batch of sources; pauses at the first conflict and stashes the rest for resume. */
+  /** Sync a batch of sources; pause at the first conflict and stash the rest for resume. */
   async function syncBatch(
     sources: SourceInstance[],
     unmatched: Set<string>,
@@ -139,7 +137,7 @@ function App() {
       await resolveConflicts(sourceId, resolutions);
       setConflicts(null);
       setPendingSourceId(null);
-      // Resume the paused loop with the stashed state.
+      // Resume the paused loop with stashed state.
       const remaining = pendingSources();
       const unmatched = pendingUnmatched();
       const summary = pendingSummary();

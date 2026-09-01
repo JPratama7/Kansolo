@@ -11,7 +11,7 @@ const STATUS_BADGE: Record<string, { label: string }> = {
   cancelled: { label: "cancelled" },
 };
 
-/** Filter skill names to only those in the agent's skill list (mirrors
+/** Filter skill names to those in the agent's skill list (mirrors
  * SkillPicker.tsx agentSkillManifests logic). */
 function filterAgentSkills(
   available: { name: string; description: string }[],
@@ -47,13 +47,13 @@ function parseSkillsUsed(skillsJson: string): string[] {
   }
 }
 
-/** Check if a run status is terminal (mirrors AgentRunPanel.tsx isTerminal). */
+/** Whether a run status is terminal (mirrors AgentRunPanel.tsx isTerminal). */
 function isTerminal(status: string): boolean {
   return status === "completed" || status === "failed" ||
     status === "cancelled";
 }
 
-/** Check if a run status is active (pending or running). */
+/** Whether a run status is active (pending or running). */
 function isActive(status: string): boolean {
   return status === "pending" || status === "running";
 }
