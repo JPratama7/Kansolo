@@ -22,7 +22,7 @@ use crate::error::AcpError;
 use crate::skills;
 use crate::worktree::WorktreeManager;
 
-/// A running agent run: the spawned task + cancellation token.
+/// Running agent run: the spawned task + cancellation token.
 pub struct RunHandle {
     pub join: tokio::task::JoinHandle<()>,
     pub cancel: std::sync::Arc<Notify>,
@@ -36,30 +36,30 @@ pub struct RunHandle {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum RunUpdate {
-    /// A session/update notification from the agent (streaming output).
+    /// Session/update notification from the agent (streaming output).
     SessionUpdate { text: String },
-    /// The session ID was received.
+    /// Session ID was received.
     #[serde(rename_all = "camelCase")]
     SessionId { session_id: String },
-    /// The run completed successfully.
+    /// Run completed successfully.
     #[serde(rename_all = "camelCase")]
     Completed { output: String, stop_reason: String },
-    /// The run failed.
+    /// Run failed.
     Failed { error: String },
-    /// The run was cancelled.
+    /// Run was cancelled.
     Cancelled,
-    /// A permission request was received from the agent.
-    /// The GUI should respond via `acp_respond_permission`.
+    /// Permission request was received from the agent.
+    /// GUI should respond via `acp_respond_permission`.
     #[serde(rename_all = "camelCase")]
     PermissionRequest {
         request_id: String,
         description: String,
     },
-    /// A permission request timed out (5min, auto-denied).
+    /// Permission request timed out (5min, auto-denied).
     PermissionTimeout,
-    /// The agent stopped with a turn-ending reason (e.g. EndTurn) and is
+    /// Agent stopped with a turn-ending reason (e.g. EndTurn) and is
     /// waiting for the user to send a follow-up prompt or complete the run.
-    /// The UI should show an input field.
+    /// UI should show an input field.
     #[serde(rename_all = "camelCase")]
     WaitingForInput { stop_reason: String },
 }
@@ -105,7 +105,7 @@ impl UpdateBuffer {
     }
 }
 
-/// A pending permission request awaiting user response.
+/// Pending permission request awaiting user response.
 /// Stores the SDK responder + the selected "allow" option's ID. The
 /// `responded` Notify lets the timeout task race against the user's
 /// response: `respond_permission` notifies after taking the responder,
@@ -193,7 +193,7 @@ impl RunCore {
         let db_path_for_perms = db_path.clone();
 
         // Channel for follow-up prompts from the user (interactive mode).
-        // The read loop waits on this after each EndTurn instead of exiting,
+        // Read loop waits on this after each EndTurn instead of exiting,
         // keeping the agent process alive for the next turn. Wrapped in
         // Arc<Mutex<Option<_>>> because connect_with's closure is Fn (not
         // FnOnce), so the receiver can't be moved directly — it's taken
@@ -294,7 +294,7 @@ impl RunCore {
                                                     SessionMessage::SessionMessage(dispatch) => {
                                                         let method = dispatch.method().to_string();
                                                         if method == "session/request_permission" {
-                                                            // A permission request interrupts any in-flight agent
+                                                            // Permission request interrupts any in-flight agent
                                                             // message — flush it first so the reply tail isn't lost.
                                                             flush_pending_chunk(&mut pending_chunk, &tx);
                                                             use agent_client_protocol::schema::v1::RequestPermissionRequest;
@@ -404,7 +404,7 @@ impl RunCore {
                                                     SessionMessage::StopReason(reason) => {
                                                         eprintln!("[create_run:{}] stop reason: {:?}", run_id_inner, reason);
                                                         let stop_str = format!("{:?}", reason);
-                                                        // The agent finished replying — flush the last message tail
+                                                        // Agent finished replying — flush the last message tail
                                                         // before signalling the wait state.
                                                         flush_pending_chunk(&mut pending_chunk, &tx);
                                                         let _ = tx.send(RunUpdate::WaitingForInput {
@@ -570,7 +570,7 @@ impl RunCore {
     }
 
     /// Cancel a running agent. Cancels the task and waits up to 5s.
-    /// The caller is responsible for updating the DB status.
+    /// Caller is responsible for updating the DB status.
     pub async fn cancel_run(&self, run_id: &str) {
         let handle = {
             let mut runs = self.runs.lock().await;
@@ -731,13 +731,13 @@ pub fn format_session_update(
 ) -> Option<String> {
     use agent_client_protocol::schema::v1::{SessionUpdate, ToolCallStatus};
     match update {
-        // The agent's streamed reply — the primary signal the user wants.
+        // Agent's streamed reply — the primary signal the user wants.
         SessionUpdate::AgentMessageChunk(chunk) => text_from_content(&chunk.content),
         // Internal reasoning; show but dim via prefix so it's distinguishable.
         SessionUpdate::AgentThoughtChunk(chunk) => {
             text_from_content(&chunk.content).map(|t| format!("💭 {t}"))
         }
-        // A new tool call was initiated. Show its title + kind.
+        // New tool call was initiated. Show its title + kind.
         SessionUpdate::ToolCall(tc) => {
             let title = tc.title.trim();
             if title.is_empty() {
@@ -766,7 +766,7 @@ pub fn format_session_update(
         }
         // Echo of the user's own prompt — drop to avoid duplicating the input.
         SessionUpdate::UserMessageChunk(_) => None,
-        // Metadata-only updates: noisy, no actionable content for the popup.
+        // Updates carrying only metadata: noisy, no actionable content for the popup.
         SessionUpdate::AvailableCommandsUpdate(_)
         | SessionUpdate::CurrentModeUpdate(_)
         | SessionUpdate::ConfigOptionUpdate(_)
@@ -1157,7 +1157,7 @@ pub async fn acp_create_run(
             format!("{}\n\n---\n\n{}", skills_section, card_body)
         };
         // Step 8: Insert agent_runs row with placeholder worktree/branch.
-        // The real values are filled in after create_run creates the worktree.
+        // Real values are filled in after create_run creates the worktree.
         let run_id = uuid::Uuid::new_v4().to_string();
         agent_runs::insert_run(
             &conn,
@@ -1607,7 +1607,7 @@ pub async fn acp_diff_main(app: AppHandle, card_id: String) -> Result<DiffResult
     Ok(DiffResult { text, truncated })
 }
 
-/// Result of a diff request.
+/// Diff request result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffResult {
@@ -2141,7 +2141,7 @@ mod tests {
 
     #[test]
     fn register_claude_code_name_rejected() {
-        // The built-in name is reserved; re-registering must fail before
+        // Built-in name is reserved; re-registering must fail before
         // touching the DB. We exercise the validation guard directly.
         let err =
             AcpError::validation("Agent name 'claude-code' is reserved for the built-in agent");
@@ -2295,14 +2295,14 @@ mod tests {
 
     fn mock_acp_agent(hang: bool) -> agent_client_protocol::AcpAgent {
         use agent_client_protocol::AcpAgentConfig;
-        let mut cfg = AcpAgentConfig::new(std::env::current_exe().unwrap())
+        let mut config = AcpAgentConfig::new(std::env::current_exe().unwrap())
             .arg("mock_acp_server")
             .arg("--nocapture")
             .env("MOCK_ACP_BINARY", "1");
         if hang {
-            cfg = cfg.env("MOCK_ACP_HANG", "1");
+            config = config.env("MOCK_ACP_HANG", "1");
         }
-        agent_client_protocol::AcpAgent::new(cfg)
+        agent_client_protocol::AcpAgent::new(config)
     }
 
     /// Mock that emits 3 chunks sharing one messageId — a single multi-chunk
@@ -2324,15 +2324,15 @@ mod tests {
     /// `ChildGuard` SIGKILL's the process group after cancel.
     fn mock_acp_agent_with_pid(hang: bool, pid_file: &str) -> agent_client_protocol::AcpAgent {
         use agent_client_protocol::AcpAgentConfig;
-        let mut cfg = AcpAgentConfig::new(std::env::current_exe().unwrap())
+        let mut config = AcpAgentConfig::new(std::env::current_exe().unwrap())
             .arg("mock_acp_server")
             .arg("--nocapture")
             .env("MOCK_ACP_BINARY", "1")
             .env("MOCK_ACP_PID_FILE", pid_file);
         if hang {
-            cfg = cfg.env("MOCK_ACP_HANG", "1");
+            config = config.env("MOCK_ACP_HANG", "1");
         }
-        agent_client_protocol::AcpAgent::new(cfg)
+        agent_client_protocol::AcpAgent::new(config)
     }
 
     /// Poll the run buffer until a terminal update appears (or timeout).
