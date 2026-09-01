@@ -202,28 +202,52 @@ pub fn plan_sync(
     snapshot: Option<&ExternalSnapshot>,
 ) -> SyncDecision {
     let Some(local) = local else {
-        return SyncDecision {
-            decision_type: SyncDecisionType::Create,
-            card: Some(remote.clone()),
-            conflicts: None,
-            remote: None,
-        };
+        return create_decision(remote);
     };
-
     let Some(snapshot) = snapshot else {
-        // First migration sync: take remote content, preserve local id/position.
-        let mut card = remote.clone();
-        card.id = local.id.clone();
-        card.position = local.position;
-        return SyncDecision {
-            decision_type: SyncDecisionType::Update,
-            card: Some(card),
-            conflicts: None,
-            remote: None,
-        };
+        return first_sync_update(remote, local);
     };
+    let (conflicts, merged) = merge_3way(local, snapshot, remote);
+    if !conflicts.is_empty() {
+        SyncDecision {
+            decision_type: SyncDecisionType::Conflict,
+            card: Some(merged),
+            conflicts: Some(conflicts),
+            remote: Some(remote.clone()),
+        }
+    } else {
+        update_or_noop(local, &merged)
+    }
+}
 
-    let mut conflicts: Vec<FieldConflict> = Vec::new();
+fn create_decision(remote: &Card) -> SyncDecision {
+    SyncDecision {
+        decision_type: SyncDecisionType::Create,
+        card: Some(remote.clone()),
+        conflicts: None,
+        remote: None,
+    }
+}
+
+fn first_sync_update(remote: &Card, local: &Card) -> SyncDecision {
+    // First migration sync: take remote content, preserve local id/position.
+    let mut card = remote.clone();
+    card.id = local.id.clone();
+    card.position = local.position;
+    SyncDecision {
+        decision_type: SyncDecisionType::Update,
+        card: Some(card),
+        conflicts: None,
+        remote: None,
+    }
+}
+
+fn merge_3way(
+    local: &Card,
+    snapshot: &ExternalSnapshot,
+    remote: &Card,
+) -> (Vec<FieldConflict>, Card) {
+    let mut conflicts = Vec::new();
     // Start from local (preserves id, position, createdAt, source).
     let mut merged = local.clone();
 
@@ -240,35 +264,27 @@ pub fn plan_sync(
                 local: local_val,
                 remote: remote_val,
             });
-            // Leave local value in merged; UI resolves.
+            // Conflicting fields stay local; the UI resolves them.
         } else if remote_changed {
-            // Apply remote to merged.
             apply_field(&mut merged, field, remote_val);
         }
         // else: keep local (either unchanged or locally edited).
     }
 
-    if !conflicts.is_empty() {
-        return SyncDecision {
-            decision_type: SyncDecisionType::Conflict,
-            card: Some(merged),
-            conflicts: Some(conflicts),
-            remote: Some(remote.clone()),
-        };
-    }
+    (conflicts, merged)
+}
 
-    // No conflict: did anything actually change vs local?
+fn update_or_noop(local: &Card, merged: &Card) -> SyncDecision {
     let changed = MergeField::ALL
         .iter()
         .any(|&f| merged.read_merge_field(f) != local.read_merge_field(f));
-
     SyncDecision {
         decision_type: if changed {
             SyncDecisionType::Update
         } else {
             SyncDecisionType::Noop
         },
-        card: if changed { Some(merged) } else { None },
+        card: if changed { Some(merged.clone()) } else { None },
         conflicts: None,
         remote: None,
     }
@@ -291,7 +307,10 @@ pub fn apply_resolution(
 ) -> Card {
     let mut resolved = conflict_card.clone();
     for c in conflicts {
-        let pick = choices.get(c.field.as_str()).copied().unwrap_or(Choice::Local);
+        let pick = choices
+            .get(c.field.as_str())
+            .copied()
+            .unwrap_or(Choice::Local);
         let value = match pick {
             Choice::Remote => c.remote.clone(),
             Choice::Local => c.local.clone(),
@@ -351,7 +370,6 @@ mod tests {
             source_ref: Some("PROJ-1".to_string()),
             source_status: Some("To Do".to_string()),
             tree_source_id: None,
-            repo_path: None,
             source_instance_id: None,
             created_at: NOW.to_string(),
             updated_at: NOW.to_string(),
@@ -606,7 +624,10 @@ mod tests {
         let d = plan_sync(&remote, Some(&local), Some(&snap));
         assert_eq!(d.decision_type, SyncDecisionType::Conflict);
         // sourceStatus not conflicting (local unchanged) -> applied; column conflicting.
-        assert_eq!(d.card.as_ref().unwrap().source_status.as_deref(), Some("In Progress"));
+        assert_eq!(
+            d.card.as_ref().unwrap().source_status.as_deref(),
+            Some("In Progress")
+        );
         let conflicts = d.conflicts.as_ref().unwrap();
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].field, MergeField::Column);
