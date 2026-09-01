@@ -1,7 +1,7 @@
 //! Pure 3-way merge logic for syncing external (Jira/GitHub/...) issues into
 //! local cards. Ported from `src/sync.ts` -- no I/O, no Tauri commands, no DB.
 //!
-//! The TS module used `jiraKey` / `jiraStatus`; the generalized Rust `Card`
+//! TS module used `jiraKey` / `jiraStatus`; the generalized Rust `Card`
 //! carries `source_ref` / `source_status` instead, and `ExternalSnapshot`
 //! mirrors that shape. `MergeField::SourceStatus` is the renamed `jiraStatus`.
 
@@ -91,7 +91,7 @@ impl<'de> Deserialize<'de> for MergeField {
 // FieldConflict / SyncDecision / Choice
 // ---------------------------------------------------------------------------
 
-/// One field where local and remote both diverged from the snapshot.
+/// Single field that differs between local and remote.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FieldConflict {
