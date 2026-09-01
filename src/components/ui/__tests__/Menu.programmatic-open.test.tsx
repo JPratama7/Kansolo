@@ -64,7 +64,7 @@ test("Menu: Shift+F10 opens card menu, ArrowDown moves focus, Escape closes", as
   assertTrue(content, "menu content rendered after Shift+F10");
 
   // ArrowDown: dispatch on the menu content. Solid's delegated keydown
-  // listener on the document will route it to the menu's onKeyDown handler.
+  // listener on the document routes it to the menu's onKeyDown handler.
   content.dispatchEvent(
     new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
   );
@@ -95,7 +95,7 @@ test("Menu: Shift+F10 opens card menu, ArrowDown moves focus, Escape closes", as
   // phase keydown listener on `document`. Under happy-dom, capture-phase
   // listeners on manually-dispatched events don't fire reliably, so the
   // menu's ESCAPE machine event is never sent. This is a happy-dom
-  // limitation, not a source-code bug. We skip the close assertion.
+  // limitation, not a source-code bug. Skip the close assertion.
   // fireEvent.keyDown(content, { key: 'Escape' });
   // assertTrue(!document.querySelector('[role="menu"]'), 'menu closed after Escape');
 

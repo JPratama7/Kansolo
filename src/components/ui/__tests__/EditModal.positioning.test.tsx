@@ -18,8 +18,8 @@ const card: KanbanCard = {
   updatedAt: "2024-01-01T00:00:00Z",
 };
 
-// Known column rect injected via getBoundingClientRect mock. EditModal does
-// not call Tauri `invoke` (only Board does), so no invoke mock is needed.
+// Known column rect injected via getBoundingClientRect mock. EditModal
+// does not call Tauri `invoke` (only Board does), so no invoke mock is needed.
 const RECT = {
   left: 120,
   top: 80,
@@ -55,7 +55,7 @@ function mockGBCR() {
   };
 }
 
-// The positioning wrapper is the parent div of Dialog.Content (.ticket-panel)
+// Positioning wrapper is the parent div of Dialog.Content (.ticket-panel)
 // inside Dialog.Positioner (see EditModal.tsx lines 374-399).
 function findWrapper(): HTMLElement {
   const content = document.body.querySelector(".ticket-panel") as
