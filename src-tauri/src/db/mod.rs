@@ -27,31 +27,15 @@ pub fn open_db<R: Runtime>(app: &AppHandle<R>) -> Result<Connection, String> {
     open_db_path(&db_path)
 }
 
-/// ISO-8601 UTC timestamp. Avoids pulling in chrono for one call site —
-/// formats the timestamp manually from `SystemTime` using the
-/// civil-from-days algorithm (Howard Hinnant).
+/// ISO-8601 UTC timestamp. Uses the `time` crate, already in the dep tree.
 pub fn now_iso() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let days = secs / 86400;
-    let rem = secs % 86400;
-    let h = rem / 3600;
-    let m = (rem % 3600) / 60;
-    let s = rem % 60;
-    let z = days as i64 + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = y + if month <= 2 { 1 } else { 0 };
-    format!("{year:04}-{month:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+    use time::macros::format_description;
+    use time::OffsetDateTime;
+    const FMT: &[time::format_description::FormatItem<'_>] =
+        format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
+    OffsetDateTime::now_utc()
+        .format(FMT)
+        .expect("format UTC timestamp")
 }
 
 /// Validate that `column` is one of the three board columns. Defense-in-depth
@@ -78,26 +62,8 @@ pub fn max_position(conn: &Connection, column: &str) -> Result<i64, String> {
     .map_err(|e| e.to_string())
 }
 
-/// Raw row from the `cards` table — mirrors the schema 1:1.
-pub struct CardRow {
-    pub id: String,
-    pub title: String,
-    pub description: Option<String>,
-    pub priority: Option<String>,
-    pub column: String,
-    pub source: String,
-    pub position: i64,
-    pub source_ref: Option<String>,
-    pub source_status: Option<String>,
-    pub tree_source_id: Option<String>,
-    pub source_instance_id: Option<String>,
-    pub created_at: String,
-    pub updated_at: String,
-}
-
-/// API-facing card representation. `description` and `priority` are
-/// promoted to plain `String` (with sensible defaults) and `tree_source_id`
-/// serializes as `treeSourceId`.
+/// Card representation, shared between the DB row and the API.
+/// Nullable columns are defaulted on read so callers always get a `String`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Card {
@@ -114,29 +80,6 @@ pub struct Card {
     pub source_instance_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
-}
-
-impl From<CardRow> for Card {
-    fn from(r: CardRow) -> Self {
-        Card {
-            id: r.id,
-            title: r.title,
-            description: r.description.unwrap_or_default(),
-            priority: r
-                .priority
-                .filter(|p| !p.is_empty())
-                .unwrap_or_else(|| "medium".to_string()),
-            column: r.column,
-            source: r.source,
-            position: r.position,
-            source_ref: r.source_ref,
-            source_status: r.source_status,
-            tree_source_id: r.tree_source_id,
-            source_instance_id: r.source_instance_id,
-            created_at: r.created_at,
-            updated_at: r.updated_at,
-        }
-    }
 }
 
 /// Snapshot of an external issue (Jira, GitHub, etc.) mirrored into the

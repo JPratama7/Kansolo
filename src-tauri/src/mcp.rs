@@ -22,7 +22,7 @@ use tauri::{AppHandle, Manager, Runtime, State};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::db::cards::{row_to_card_row, CARD_COLUMNS};
+use crate::db::cards::{row_to_card, CARD_COLUMNS};
 use crate::db::{now_iso, open_db_path, Card};
 use rusqlite::params;
 
@@ -168,7 +168,7 @@ impl KansoloMcp {
                     Some(serde_json::json!({ "error": e.to_string() })),
                 )
             })?;
-        let rows = stmt.query_map([], row_to_card_row).map_err(|e| {
+        let rows = stmt.query_map([], row_to_card).map_err(|e| {
             McpError::internal_error(
                 "db_query_failed",
                 Some(serde_json::json!({ "error": e.to_string() })),
@@ -177,13 +177,12 @@ impl KansoloMcp {
         let cards: Vec<Card> = {
             let mut out = Vec::new();
             for r in rows {
-                let row = r.map_err(|e| {
+                out.push(r.map_err(|e| {
                     McpError::internal_error(
                         "db_row_failed",
                         Some(serde_json::json!({ "error": e.to_string() })),
                     )
-                })?;
-                out.push(Card::from(row));
+                })?);
             }
             out
         };
@@ -208,11 +207,10 @@ impl KansoloMcp {
         let row = conn.query_row(
             &format!(r#"SELECT {CARD_COLUMNS} FROM cards WHERE id = ?1"#),
             [&id],
-            row_to_card_row,
+            row_to_card,
         );
         match row {
-            Ok(r) => {
-                let card = Card::from(r);
+            Ok(card) => {
                 Ok(CallToolResult::success(vec![Content::text(
                     serde_json::to_string_pretty(&card).map_err(|e| {
                         McpError::internal_error(

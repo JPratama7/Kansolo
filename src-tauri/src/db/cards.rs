@@ -1,17 +1,20 @@
 // Card CRUD commands — filled in step n2
 
 use super::*;
-use crate::db::{max_position, now_iso, open_db, Card, CardRow};
+use crate::db::{max_position, now_iso, open_db, Card};
 use crate::error::AcpError;
 
-/// Map a single row from the `cards` table into a [`CardRow`].
-/// Uses only the generalized `source_ref`/`source_status` columns.
-pub(crate) fn row_to_card_row(row: &rusqlite::Row) -> rusqlite::Result<CardRow> {
-    Ok(CardRow {
+/// Map a single row from the `cards` table into a [`Card`].
+/// Nullable columns are defaulted inline.
+pub(crate) fn row_to_card(row: &rusqlite::Row) -> rusqlite::Result<Card> {
+    Ok(Card {
         id: row.get("id")?,
         title: row.get("title")?,
-        description: row.get("description")?,
-        priority: row.get("priority")?,
+        description: row.get::<_, Option<String>>("description")?.unwrap_or_default(),
+        priority: row
+            .get::<_, Option<String>>("priority")?
+            .filter(|p| !p.is_empty())
+            .unwrap_or_else(|| "medium".to_string()),
         column: row.get("column")?,
         source: row.get("source")?,
         position: row.get("position")?,
@@ -37,12 +40,11 @@ pub async fn list_cards(app: AppHandle) -> Result<Vec<Card>, String> {
         ))
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(rusqlite::params![], row_to_card_row)
+        .query_map(rusqlite::params![], row_to_card)
         .map_err(|e| e.to_string())?;
     let mut cards = Vec::new();
     for r in rows {
-        let row = r.map_err(|e| e.to_string())?;
-        cards.push(Card::from(row));
+        cards.push(r.map_err(|e| e.to_string())?);
     }
     Ok(cards)
 }
@@ -59,12 +61,11 @@ pub async fn list_cards_by_column(app: AppHandle, column: String) -> Result<Vec<
         ))
         .map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(rusqlite::params![column], row_to_card_row)
+        .query_map(rusqlite::params![column], row_to_card)
         .map_err(|e| e.to_string())?;
     let mut cards = Vec::new();
     for r in rows {
-        let row = r.map_err(|e| e.to_string())?;
-        cards.push(Card::from(row));
+        cards.push(r.map_err(|e| e.to_string())?);
     }
     Ok(cards)
 }
@@ -115,8 +116,8 @@ pub async fn create_local_card(
     })
 }
 
-/// Patch selected fields on a card. Mirrors src/db.ts updateCard (lines 104-139):
-/// only non-None fields go into the SET clause, and updated_at is always bumped.
+/// Patch selected fields on a card. `None` leaves the existing value.
+/// Empty `priority` is ignored; empty `tree_source_id` becomes NULL.
 #[tauri::command]
 pub async fn update_card(
     app: AppHandle,
@@ -128,61 +129,47 @@ pub async fn update_card(
     source_status: Option<String>,
     tree_source_id: Option<String>,
 ) -> Result<(), String> {
-    let conn = open_db(&app)?;
-    let mut sets: Vec<String> = Vec::new();
-    // Boxed values keep the borrow alive for the dynamic params![] call below.
-    let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-
-    if let Some(v) = title {
-        sets.push(format!("title = ?{}", binds.len() + 1));
-        binds.push(Box::new(v));
-    }
-    if let Some(v) = description {
-        sets.push(format!("description = ?{}", binds.len() + 1));
-        binds.push(Box::new(v));
-    }
-    if let Some(v) = priority {
-        let v = v.trim().to_string();
-        if !v.is_empty() {
-            sets.push(format!("priority = ?{}", binds.len() + 1));
-            binds.push(Box::new(v));
-        }
-    }
-    if let Some(v) = column {
-        crate::db::validate_column(&v)?;
-        sets.push(format!(r#""column" = ?{}"#, binds.len() + 1));
-        binds.push(Box::new(v));
-    }
-    if let Some(v) = source_status {
-        sets.push(format!("source_status = ?{}", binds.len() + 1));
-        binds.push(Box::new(v));
-    }
-    if let Some(v) = tree_source_id {
-        // Empty string normalizes to NULL, matching the TS `patch.treeSourceId || null` behavior.
-        let to_store: Option<String> = if v.is_empty() { None } else { Some(v) };
-        sets.push(format!("tree_source_id = ?{}", binds.len() + 1));
-        binds.push(Box::new(to_store));
-    }
-
-    if sets.is_empty() {
-        // Nothing to do; mirror the TS early-return.
+    if title.is_none()
+        && description.is_none()
+        && priority.is_none()
+        && column.is_none()
+        && source_status.is_none()
+        && tree_source_id.is_none()
+    {
         return Ok(());
     }
 
-    sets.push(format!("updated_at = ?{}", binds.len() + 1));
-    binds.push(Box::new(now_iso()));
+    if let Some(ref v) = column {
+        crate::db::validate_column(v)?;
+    }
 
-    let id_idx = binds.len() + 1;
-    binds.push(Box::new(id));
-
-    let sql = format!(
-        "UPDATE cards SET {} WHERE id = ?{}",
-        sets.join(", "),
-        id_idx
-    );
-    let params: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
-    conn.execute(&sql, params.as_slice())
-        .map_err(|e| e.to_string())?;
+    let conn = open_db(&app)?;
+    conn.execute(
+        r#"UPDATE cards SET
+            title = COALESCE(?1, title),
+            description = COALESCE(?2, description),
+            priority = COALESCE(NULLIF(trim(?3), ''), priority),
+            "column" = COALESCE(?4, "column"),
+            source_status = COALESCE(?5, source_status),
+            tree_source_id = CASE
+                WHEN ?6 IS NULL THEN tree_source_id
+                WHEN trim(?6) = '' THEN NULL
+                ELSE ?6
+            END,
+            updated_at = ?7
+          WHERE id = ?8"#,
+        rusqlite::params![
+            title,
+            description,
+            priority,
+            column,
+            source_status,
+            tree_source_id,
+            now_iso(),
+            id,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -304,8 +291,7 @@ pub fn get_card_by_source_ref_inner(
         .query(rusqlite::params![source, source_ref])
         .map_err(|e| e.to_string())?;
     if let Some(row) = rows.next().map_err(|e| e.to_string())? {
-        let card_row = row_to_card_row(row).map_err(|e| e.to_string())?;
-        Ok(Some(Card::from(card_row)))
+        Ok(Some(row_to_card(row).map_err(|e| e.to_string())?))
     } else {
         Ok(None)
     }
@@ -354,8 +340,9 @@ pub fn get_card_by_id(
         .query(rusqlite::params![id])
         .map_err(crate::error::AcpError::internal)?;
     if let Some(row) = rows.next().map_err(crate::error::AcpError::internal)? {
-        let card_row = row_to_card_row(row).map_err(crate::error::AcpError::internal)?;
-        Ok(Some(Card::from(card_row)))
+        Ok(Some(
+            row_to_card(row).map_err(crate::error::AcpError::internal)?,
+        ))
     } else {
         Ok(None)
     }
