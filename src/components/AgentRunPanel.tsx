@@ -13,7 +13,13 @@ import { DiffView } from "@git-diff-view/solid";
 import { highlighter } from "../vendor/git-diff-lowlight.mjs";
 import "@git-diff-view/solid/styles/diff-view.css";
 import { toaster } from "./ui/toaster.ts";
-import type { AgentRun, AcpUpdateEvent, DiffResult, MergeResult, RunUpdate } from "../types.ts";
+import type {
+  AcpUpdateEvent,
+  AgentRun,
+  DiffResult,
+  MergeResult,
+  RunUpdate,
+} from "../types.ts";
 import { safeListen } from "../event.ts";
 import {
   acpCancelRun,
@@ -22,6 +28,7 @@ import {
   acpListUpdates,
   acpMerge,
   acpRemoveWorktree,
+  acpResumeRun,
   acpSendFollowup,
   getAllSettings,
   setSetting,
@@ -70,7 +77,11 @@ function updateToThread(u: RunUpdate): ThreadMsg | null {
     case "sessionId":
       return { kind: "session", sessionId: u.sessionId };
     case "completed":
-      return { kind: "status", text: `Completed · ${u.stopReason}`, tone: "ok" };
+      return {
+        kind: "status",
+        text: `Completed · ${u.stopReason}`,
+        tone: "ok",
+      };
     case "failed":
       return { kind: "status", text: `Failed · ${u.error}`, tone: "err" };
     case "cancelled":
@@ -85,8 +96,6 @@ function updateToThread(u: RunUpdate): ThreadMsg | null {
       return null;
   }
 }
-
-
 
 /** Parse raw unified diff text into hunk strings for DiffView.
  * Each hunk starts with `@@` and includes all lines until the next `@@`
@@ -121,6 +130,7 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
   const [waitingForInput, setWaitingForInput] = createSignal(false);
   const [followupText, setFollowupText] = createSignal("");
   const [sendingFollowup, setSendingFollowup] = createSignal(false);
+  const [resuming, setResuming] = createSignal(false);
   // Permission requests are pushed to the module-level FIFO queue in
   // PermissionDialog.tsx; a single global dialog renders the queue head.
   // The panel keeps no local permission state.
@@ -291,7 +301,9 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
     for (const u of newUpdates) {
       if (u.type === "waitingForInput") {
         setWaitingForInput(true);
-      } else if (u.type === "completed" || u.type === "failed" || u.type === "cancelled") {
+      } else if (
+        u.type === "completed" || u.type === "failed" || u.type === "cancelled"
+      ) {
         setWaitingForInput(false);
       }
     }
@@ -388,6 +400,22 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
     }
   }
 
+  async function handleResume() {
+    const run = props.run;
+    if (!run) return;
+    setResuming(true);
+    try {
+      await acpResumeRun(run.id);
+    } catch (e) {
+      toaster.error({
+        title: "Resume failed",
+        description: acpErrorMessage(e),
+      });
+    } finally {
+      setResuming(false);
+    }
+  }
+
   const isTerminal = () => {
     const s = props.run?.status;
     return s === "completed" || s === "failed" || s === "cancelled";
@@ -413,7 +441,9 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
           >
             <header class="agent-header">
               <span
-                class={`agent-dot agent-dot--${STATUS_DOT[props.run?.status ?? ""] ?? "muted"}`}
+                class={`agent-dot agent-dot--${
+                  STATUS_DOT[props.run?.status ?? ""] ?? "muted"
+                }`}
                 aria-hidden="true"
               />
               <div class="min-w-0 flex-1">
@@ -527,8 +557,7 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
                                 onClick={() =>
                                   setDiffMode((m) =>
                                     m === "split" ? "unified" : "split"
-                                  )
-                                }
+                                  )}
                               >
                                 {diffMode() === "split" ? "Unified" : "Split"}
                               </button>
@@ -588,7 +617,8 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
                         </ul>
                         <Show when={r().repoBlocked}>
                           <p class="text-xs text-p-urgent mt-1">
-                            Repository is blocked — resolve conflicts in terminal.
+                            Repository is blocked — resolve conflicts in
+                            terminal.
                           </p>
                         </Show>
                       </Show>
@@ -669,7 +699,15 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
                 </div>
               </Show>
               <Show when={!isTerminal() && !waitingForInput()}>
-                <p class="agent-footer-muted">Working…</p>
+                <div class="agent-actionbar">
+                  <button
+                    type="button"
+                    disabled={resuming()}
+                    onClick={() => void handleResume()}
+                  >
+                    {resuming() ? "Resuming…" : "Resume"}
+                  </button>
+                </div>
               </Show>
             </footer>
 

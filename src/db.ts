@@ -220,6 +220,10 @@ export async function acpCreateRun(
   return invoke<AgentRun>("acp_create_run", { cardId, agentName, skillNames });
 }
 
+export async function acpResumeRun(runId: string): Promise<AgentRun> {
+  return invoke<AgentRun>("acp_resume_run", { runId });
+}
+
 export async function acpGetRun(runId: string): Promise<AgentRun | null> {
   return invoke<AgentRun | null>("acp_get_run", { runId });
 }

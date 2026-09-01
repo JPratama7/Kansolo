@@ -135,13 +135,13 @@ mod tests {
             if let Some(ref dir) = self.dir {
                 let _ = std::fs::remove_dir_all(dir);
             }
-            std::env::remove_var("ACP_SKILLS_DIR");
+            unsafe { std::env::remove_var("ACP_SKILLS_DIR") };
         }
     }
 
     fn with_skills_dir() -> TestGuard {
         let guard = ENV_LOCK.lock().unwrap();
-        std::env::set_var("ACP_SKILLS_DIR", "/nonexistent/path/xyz");
+        unsafe { std::env::set_var("ACP_SKILLS_DIR", "/nonexistent/path/xyz") };
         TestGuard {
             _guard: guard,
             dir: None,
@@ -152,7 +152,7 @@ mod tests {
         let guard = ENV_LOCK.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("tasker-skills-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("ACP_SKILLS_DIR", dir.to_string_lossy().to_string());
+        unsafe { std::env::set_var("ACP_SKILLS_DIR", dir.to_string_lossy().to_string()) };
         let g = TestGuard {
             _guard: guard,
             dir: Some(dir.clone()),

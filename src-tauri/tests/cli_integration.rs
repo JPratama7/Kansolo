@@ -411,9 +411,27 @@ fn cli_cleanup_reaps_dangling_runs() {
     let conn = test_db();
     insert_card(&conn, "c-1");
     agents::insert_agent(&conn, "a", "cmd", "", false, true, &[]).unwrap();
+    // Pending runs (no worktree yet) are reaped.
     agent_runs::insert_run(
         &conn,
         "r-1",
+        "c-1",
+        "a",
+        "/tmp/pending",
+        "agent/pending",
+        "pending",
+        &[],
+    )
+    .unwrap();
+    let reaped = runner::cleanup_dangling(&conn).unwrap();
+    assert_eq!(reaped, vec!["r-1"]);
+    let run = agent_runs::get_run(&conn, "r-1").unwrap().unwrap();
+    assert_eq!(run.status, "failed");
+
+    // Running runs are left alone so they can be resumed.
+    agent_runs::insert_run(
+        &conn,
+        "r-2",
         "c-1",
         "a",
         "/tmp/wt",
@@ -423,9 +441,9 @@ fn cli_cleanup_reaps_dangling_runs() {
     )
     .unwrap();
     let reaped = runner::cleanup_dangling(&conn).unwrap();
-    assert_eq!(reaped, vec!["r-1"]);
-    let run = agent_runs::get_run(&conn, "r-1").unwrap().unwrap();
-    assert_eq!(run.status, "failed");
+    assert!(reaped.is_empty());
+    let run = agent_runs::get_run(&conn, "r-2").unwrap().unwrap();
+    assert_eq!(run.status, "running");
 }
 
 #[test]

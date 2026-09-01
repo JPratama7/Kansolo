@@ -146,6 +146,16 @@ pub fn update_status(
     Ok(())
 }
 
+/// Persist the ACP session id for a run.
+pub fn set_session_id(conn: &Connection, id: &str, session_id: &str) -> Result<(), AcpError> {
+    conn.execute(
+        "UPDATE agent_runs SET session_id = ?1 WHERE id = ?2",
+        params![session_id, id],
+    )
+    .map_err(AcpError::internal)?;
+    Ok(())
+}
+
 /// Mark a run as merged (sets `merged_at` timestamp).
 pub fn set_merged(conn: &Connection, id: &str, merged_at: &str) -> Result<(), AcpError> {
     conn.execute(

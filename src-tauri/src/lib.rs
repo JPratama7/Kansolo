@@ -107,6 +107,7 @@ pub fn run() {
             runner::acp_list_skills,
             runner::acp_list_active_runs,
             runner::acp_create_run,
+            runner::acp_resume_run,
             runner::acp_get_run,
             runner::acp_get_run_for_card,
             runner::acp_latest_run_for_card,
