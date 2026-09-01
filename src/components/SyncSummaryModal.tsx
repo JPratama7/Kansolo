@@ -1,4 +1,11 @@
-import { For, Show, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
+import {
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js";
 
 export interface SyncSummaryEntry {
   label: string;
@@ -15,11 +22,11 @@ interface SyncSummaryModalProps {
 
 /** Per-source-type segment color. Falls back to a neutral for unknown types. */
 const SOURCE_COLORS: Record<string, string> = {
-  jira: 'var(--color-accent)',
-  github: 'var(--color-col-ongoing)',
-  gitlab: 'var(--color-col-done)',
+  jira: "var(--color-accent)",
+  github: "var(--color-col-ongoing)",
+  gitlab: "var(--color-col-done)",
 };
-const DEFAULT_SOURCE_COLOR = 'var(--color-elevated)';
+const DEFAULT_SOURCE_COLOR = "var(--color-elevated)";
 
 function sourceColor(sourceType: string): string {
   return SOURCE_COLORS[sourceType] ?? DEFAULT_SOURCE_COLOR;
@@ -31,8 +38,12 @@ function useCountUp(target: number, duration = 500) {
   const [current, setCurrent] = createSignal(0);
   onMount(() => {
     if (target <= 0) return;
-    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    if (reduce) { setCurrent(target); return; }
+    const reduce =
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce) {
+      setCurrent(target);
+      return;
+    }
     const start = performance.now();
     let raf = 0;
     const tick = (now: number) => {
@@ -49,7 +60,9 @@ function useCountUp(target: number, duration = 500) {
 }
 
 export default function SyncSummaryModal(props: SyncSummaryModalProps) {
-  const total = createMemo(() => props.entries.reduce((sum, e) => sum + e.count, 0));
+  const total = createMemo(() =>
+    props.entries.reduce((sum, e) => sum + e.count, 0)
+  );
   const displayedTotal = useCountUp(total());
 
   // Mount flag flips true next frame so the proportion bar transitions from 0.
@@ -64,17 +77,17 @@ export default function SyncSummaryModal(props: SyncSummaryModalProps) {
       // Bail if another handler already consumed this Escape (e.g. an open
       // menu inside the modal) so we don't double-close.
       if (e.defaultPrevented) return;
-      if (e.key === 'Escape') props.onClose();
+      if (e.key === "Escape") props.onClose();
     };
-    window.addEventListener('keydown', onKey);
-    onCleanup(() => window.removeEventListener('keydown', onKey));
+    window.addEventListener("keydown", onKey);
+    onCleanup(() => window.removeEventListener("keydown", onKey));
   });
 
   const timestamp = createMemo(() => {
     const v = props.syncedAt;
-    if (!v) return '';
+    if (!v) return "";
     const d = new Date(v);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   });
 
   const hasImports = () => total() > 0;
@@ -98,7 +111,9 @@ export default function SyncSummaryModal(props: SyncSummaryModalProps) {
             Sync complete
           </span>
           <Show when={timestamp()}>
-            <span class="text-[11px] font-mono text-ink-muted tabular-nums">{timestamp()}</span>
+            <span class="text-[11px] font-mono text-ink-muted tabular-nums">
+              {timestamp()}
+            </span>
           </Show>
         </div>
 
@@ -106,24 +121,27 @@ export default function SyncSummaryModal(props: SyncSummaryModalProps) {
           <div class="flex items-baseline gap-2">
             <span
               class="text-6xl font-extrabold tabular-nums leading-none"
-              classList={{ 'text-accent': hasImports(), 'text-ink-muted': !hasImports() }}
+              classList={{
+                "text-accent": hasImports(),
+                "text-ink-muted": !hasImports(),
+              }}
             >
               {displayedTotal()}
             </span>
             <span class="text-sm font-medium text-ink-secondary">
-              ticket{total() === 1 ? '' : 's'} imported
+              ticket{total() === 1 ? "" : "s"} imported
             </span>
           </div>
 
           <Show when={hasImports()}>
-            <div class="sync-bar" classList={{ 'is-mounted': mounted() }}>
+            <div class="sync-bar" classList={{ "is-mounted": mounted() }}>
               <For each={props.entries}>
                 {(e) => (
                   <div
                     class="sync-bar-seg"
                     style={{
-                      '--seg-width': `${(e.count / total()) * 100}%`,
-                      'background': sourceColor(e.sourceType),
+                      "--seg-width": `${(e.count / total()) * 100}%`,
+                      "background": sourceColor(e.sourceType),
                     }}
                   />
                 )}
@@ -133,21 +151,25 @@ export default function SyncSummaryModal(props: SyncSummaryModalProps) {
 
           <Show
             when={props.entries.length > 0}
-            fallback={<p class="text-sm text-ink-secondary">No enabled sources.</p>}
+            fallback={
+              <p class="text-sm text-ink-secondary">No enabled sources.</p>
+            }
           >
             <ul class="flex flex-col gap-1.5">
               <For each={props.entries}>
                 {(e, i) => (
                   <li
                     class="sync-row flex items-center gap-2.5 text-sm rounded-md px-2.5 py-2 bg-elevated/40 border border-border-subtle"
-                    style={{ 'animation-delay': `${120 + i() * 40}ms` }}
+                    style={{ "animation-delay": `${120 + i() * 40}ms` }}
                   >
                     <span
                       class="w-2 h-2 rounded-full shrink-0"
-                      style={{ 'background': sourceColor(e.sourceType) }}
+                      style={{ "background": sourceColor(e.sourceType) }}
                       aria-hidden="true"
                     />
-                    <span class="min-w-0 truncate font-semibold text-ink">{e.label}</span>
+                    <span class="min-w-0 truncate font-semibold text-ink">
+                      {e.label}
+                    </span>
                     <span class="metadata-chip shrink-0">{e.sourceType}</span>
                     <span class="ml-auto font-mono tabular-nums text-ink-secondary shrink-0">
                       {e.count}
@@ -164,7 +186,8 @@ export default function SyncSummaryModal(props: SyncSummaryModalProps) {
                 No tickets matched this run.
               </p>
               <p class="text-xs text-ink-muted mt-1 leading-snug">
-                Open Settings and check each source's JQL or filters, credentials, and project key.
+                Open Settings and check each source's JQL or filters,
+                credentials, and project key.
               </p>
             </div>
           </Show>

@@ -12,9 +12,12 @@ if (isProd) {
     const k = e.key;
     const ctrl = e.ctrlKey || e.metaKey;
     // F12 / Ctrl+Shift+I / Ctrl+Shift+J / Ctrl+U → inspect / view source
-    if (k === "F12" ||
-        (ctrl && e.shiftKey && (k === "I" || k === "i" || k === "J" || k === "j")) ||
-        (ctrl && (k === "u" || k === "U"))) {
+    if (
+      k === "F12" ||
+      (ctrl && e.shiftKey &&
+        (k === "I" || k === "i" || k === "J" || k === "j")) ||
+      (ctrl && (k === "u" || k === "U"))
+    ) {
       e.preventDefault();
       return;
     }
@@ -23,8 +26,12 @@ if (isProd) {
       e.preventDefault();
       return;
     }
-    // Alt+Left / Alt+Right / Cmd+Left / Cmd+Right → nav back/forward
-    if ((e.altKey || ctrl) && (k === "ArrowLeft" || k === "ArrowRight")) {
+    // Alt+Left / Alt+Right / Cmd+Left / Cmd+Right → nav back/forward.
+    // Skip when focus is in a text input/textarea — Ctrl+Arrow is word-jump
+    // and Alt+Arrow is used by some editors; blocking them there breaks editing.
+    const tag = (e.target as HTMLElement)?.tagName;
+    const isText = tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable;
+    if (!isText && (e.altKey || ctrl) && (k === "ArrowLeft" || k === "ArrowRight")) {
       e.preventDefault();
       return;
     }

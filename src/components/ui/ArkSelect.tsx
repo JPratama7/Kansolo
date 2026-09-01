@@ -1,5 +1,5 @@
-import { Select, createListCollection } from '@ark-ui/solid/select';
-import { createMemo, For, type JSX } from 'solid-js';
+import { createListCollection, Select } from "@ark-ui/solid/select";
+import { createMemo, For, type JSX } from "solid-js";
 
 export interface ArkSelectItem {
   label: string;
@@ -15,23 +15,21 @@ interface ArkSelectProps {
   class?: string;
 }
 
-/**
- * Thin wrapper around Ark UI Select. Rebuilds the collection reactively via
- * `createMemo` so dropdown contents stay in sync when `items` changes while
- * the select is open (e.g. tree sources added in Settings while EditModal is
- * open). `Select.HiddenSelect` renders a visually hidden native `<select>`
- * carrying the `name` attribute for form compatibility.
- */
+/** Reactive Ark UI Select wrapper that rebuilds its collection when `items` change. */
 export function ArkSelect(props: ArkSelectProps): JSX.Element {
-  const collection = createMemo(() => createListCollection({ items: props.items }));
+  const collection = createMemo(() =>
+    createListCollection({ items: props.items })
+  );
   return (
     <Select.Root
       collection={collection()}
       value={props.value ? [props.value] : []}
-      onValueChange={(e) => props.onValueChange(e.value[0] ?? '')}
+      onValueChange={(e) => props.onValueChange(e.value[0] ?? "")}
     >
       <Select.HiddenSelect name={props.name} />
-      <Select.Trigger class={`flex items-center justify-between gap-2 ${props.class ?? ''}`}>
+      <Select.Trigger
+        class={`flex items-center justify-between gap-2 ${props.class ?? ""}`}
+      >
         <Select.ValueText placeholder={props.placeholder} />
         <Select.Indicator>
           <span class="i-carat-down" aria-hidden="true">▾</span>
@@ -46,7 +44,9 @@ export function ArkSelect(props: ArkSelectProps): JSX.Element {
                 class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer"
               >
                 <Select.ItemText>{item.label}</Select.ItemText>
-                <Select.ItemIndicator class="float-right">✓</Select.ItemIndicator>
+                <Select.ItemIndicator class="float-right">
+                  ✓
+                </Select.ItemIndicator>
               </Select.Item>
             )}
           </For>

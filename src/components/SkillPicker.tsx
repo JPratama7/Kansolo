@@ -1,5 +1,5 @@
-import { For, Show, createMemo } from 'solid-js';
-import type { SkillManifest } from '../db.ts';
+import { createMemo, For, Show } from "solid-js";
+import type { SkillManifest } from "../db.ts";
 
 export interface SkillPickerProps {
   /** All available skills from disk (acp_list_skills). */
@@ -49,7 +49,9 @@ export default function SkillPicker(props: SkillPickerProps) {
                 <div class="min-w-0">
                   <p class="font-medium leading-tight">{skill.name}</p>
                   <Show when={skill.description}>
-                    <p class="text-xs text-ink-secondary line-clamp-2">{skill.description}</p>
+                    <p class="text-xs text-ink-secondary line-clamp-2">
+                      {skill.description}
+                    </p>
                   </Show>
                 </div>
               </label>

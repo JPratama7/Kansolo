@@ -1,31 +1,44 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from 'solid-js';
-import { Portal } from 'solid-js/web';
-import { DragDropContext, DragDropSensors, DragOverlay, useDragDropContext } from '@thisbeyond/solid-dnd';
-import { micromark } from 'micromark';
-import { Menu, useMenu } from '@ark-ui/solid/menu';
-import { invoke } from '@tauri-apps/api/core';
-import { toaster } from './ui/toaster.ts';
-import type { ColumnId, KanbanCard, Priority, TreeSource } from '../types.ts';
-import type { AgentRun, Agent, SkillManifest } from '../db.ts';
-import { COLUMNS } from '../columns.ts';
 import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js";
+import { Portal } from "solid-js/web";
+import {
+  DragDropContext,
+  DragDropSensors,
+  DragOverlay,
+  useDragDropContext,
+} from "@thisbeyond/solid-dnd";
+import { micromark } from "micromark";
+import { Menu, useMenu } from "@ark-ui/solid/menu";
+import { invoke } from "@tauri-apps/api/core";
+import { toaster } from "./ui/toaster.ts";
+import type { ColumnId, KanbanCard, Priority, TreeSource } from "../types.ts";
+import type { Agent, AgentRun, SkillManifest } from "../db.ts";
+import { COLUMNS } from "../columns.ts";
+import {
+  acpCreateRun,
+  acpErrorMessage,
+  acpLatestRunForCard,
+  acpListActiveRuns,
+  acpListAgents,
+  acpListSkills,
   createLocalCard,
   deleteCard as deleteCardDb,
   listCardsByColumn,
   listTreeSources,
   moveCard as moveCardDb,
   updateCard,
-  acpErrorMessage,
-  acpListActiveRuns,
-  acpListAgents,
-  acpListSkills,
-  acpCreateRun,
-  acpLatestRunForCard,
-} from '../db.ts';
-import Column from './Column.tsx';
-import EditModal, { type EditModalResult } from './EditModal.tsx';
-import AgentRunPanel from './AgentRunPanel.tsx';
-import SkillPicker from './SkillPicker.tsx';
+} from "../db.ts";
+import Column from "./Column.tsx";
+import EditModal, { type EditModalResult } from "./EditModal.tsx";
+import AgentRunPanel from "./AgentRunPanel.tsx";
+import SkillPicker from "./SkillPicker.tsx";
 
 let reloadBoard: (() => Promise<void>) | null = null;
 
@@ -42,16 +55,19 @@ interface DragEndEvent {
 }
 
 const PRIORITY_STRIP: Record<Priority, string> = {
-  low: 'bg-p-low',
-  medium: 'bg-p-med',
-  high: 'bg-p-high',
-  urgent: 'bg-p-urgent',
+  low: "bg-p-low",
+  medium: "bg-p-med",
+  high: "bg-p-high",
+  urgent: "bg-p-urgent",
 };
 
 /** Portals the dragged card to document.body so it paints above all columns. */
 function CardDragOverlay(props: { treeSources: () => TreeSource[] }) {
   const [state] = useDragDropContext() as [
-    { active: { draggable: string | null }; draggables: Record<string, { data?: KanbanCard }> },
+    {
+      active: { draggable: string | null };
+      draggables: Record<string, { data?: KanbanCard }>;
+    },
   ];
   const activeCard = () => {
     const id = state.active.draggable;
@@ -62,15 +78,25 @@ function CardDragOverlay(props: { treeSources: () => TreeSource[] }) {
       <Show when={activeCard()}>
         {(card) => (
           <>
-            <div class={`priority-strip ${PRIORITY_STRIP[card().priority]}`} aria-hidden="true" />
+            <div
+              class={`priority-strip ${PRIORITY_STRIP[card().priority]}`}
+              aria-hidden="true"
+            />
             <div class="px-3 py-2">
               <p class="text-sm text-ink leading-snug">{card().title}</p>
               <Show when={card().description}>
-                <div class="md-preview text-xs text-ink-secondary mt-1 line-clamp-2" innerHTML={micromark(card().description)} />
+                <div
+                  class="md-preview text-xs text-ink-secondary mt-1 line-clamp-2"
+                  innerHTML={micromark(card().description)}
+                />
               </Show>
               <Show when={card().treeSourceId}>
-                <p class="text-[10px] font-mono text-ink-muted mt-1 truncate" title={card().treeSourceId}>
-                  {props.treeSources().find((s) => s.id === card().treeSourceId)?.label ?? card().treeSourceId}
+                <p
+                  class="text-[10px] font-mono text-ink-muted mt-1 truncate"
+                  title={card().treeSourceId}
+                >
+                  {props.treeSources().find((s) => s.id === card().treeSourceId)
+                    ?.label ?? card().treeSourceId}
                 </p>
               </Show>
               <div class="flex items-center justify-between gap-2 mt-2">
@@ -78,7 +104,7 @@ function CardDragOverlay(props: { treeSources: () => TreeSource[] }) {
                   <span class="text-[10px] font-semibold uppercase tracking-wide text-ink-secondary">
                     {card().priority}
                   </span>
-                  {card().source !== 'local' && card().sourceRef && (
+                  {card().source !== "local" && card().sourceRef && (
                     <span class="text-[10px] font-mono text-ink-secondary bg-base/60 rounded px-1 py-0.5 truncate">
                       {card().sourceRef}
                     </span>
@@ -98,37 +124,53 @@ export default function Board() {
   const [treeSources, setTreeSources] = createSignal<TreeSource[]>([]);
   // Per-column loading state. True while a column's first fetch (or a sync
   // reload) is in flight — drives skeleton placeholders in Column.
-  const [columnLoading, setColumnLoading] = createSignal<Record<ColumnId, boolean>>({
+  const [columnLoading, setColumnLoading] = createSignal<
+    Record<ColumnId, boolean>
+  >({
     backlog: true,
     ongoing: true,
     done: true,
   });
   // Singleton EditModal state: the card currently being edited, or null when
   // the modal is closed. Lifted out of Card so only one Dialog.Root exists.
-  const [currentlyEditingCard, setCurrentlyEditingCard] = createSignal<KanbanCard | null>(null);
+  const [currentlyEditingCard, setCurrentlyEditingCard] = createSignal<
+    KanbanCard | null
+  >(null);
   // Dirty state lifted from EditModal so Board can guard card-switching.
   const [isEditingDirty, setIsEditingDirty] = createSignal(false);
   // Pending card switch: the card the user wants to edit, awaiting discard
   // confirmation for the current dirty card.
-  const [pendingSwitchCard, setPendingSwitchCard] = createSignal<KanbanCard | null>(null);
-  const [pendingSwitchToastId, setPendingSwitchToastId] = createSignal<string | null>(null);
-  // Singleton context menu state: the card whose menu is open + the screen
-  // point to anchor the menu at. Lifted out of Card so only one Menu.Root
-  // machine exists (decision 12).
-  const [currentlyMenuingCard, setCurrentlyMenuingCard] = createSignal<KanbanCard | null>(null);
-  const [menuAnchorPoint, setMenuAnchorPoint] = createSignal<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [pendingSwitchCard, setPendingSwitchCard] = createSignal<
+    KanbanCard | null
+  >(null);
+  const [pendingSwitchToastId, setPendingSwitchToastId] = createSignal<
+    string | null
+  >(null);
+  // Context menu state is hoisted to Board so only one menu is open at a time.
+  const [currentlyMenuingCard, setCurrentlyMenuingCard] = createSignal<
+    KanbanCard | null
+  >(null);
+  const [menuAnchorPoint, setMenuAnchorPoint] = createSignal<
+    { x: number; y: number }
+  >({ x: 0, y: 0 });
   // Active agent runs keyed by card_id. Board polls acp_list_active_runs
   // every 2s while any run is active, then distributes to Card → AgentBadge.
-  const [activeRuns, setActiveRuns] = createSignal<Record<string, AgentRun>>({});
+  const [activeRuns, setActiveRuns] = createSignal<Record<string, AgentRun>>(
+    {},
+  );
   // AgentRunPanel (singleton): the run being inspected, or null when closed.
   const [panelRun, setPanelRun] = createSignal<AgentRun | null>(null);
   const [panelOpen, setPanelOpen] = createSignal(false);
   // Start-agent dialog state: target card + loaded agents/skills.
   const [startDialogOpen, setStartDialogOpen] = createSignal(false);
-  const [startDialogCard, setStartDialogCard] = createSignal<KanbanCard | null>(null);
+  const [startDialogCard, setStartDialogCard] = createSignal<KanbanCard | null>(
+    null,
+  );
   const [startDialogAgents, setStartDialogAgents] = createSignal<Agent[]>([]);
-  const [startDialogSkills, setStartDialogSkills] = createSignal<SkillManifest[]>([]);
-  const [startAgentName, setStartAgentName] = createSignal('');
+  const [startDialogSkills, setStartDialogSkills] = createSignal<
+    SkillManifest[]
+  >([]);
+  const [startAgentName, setStartAgentName] = createSignal("");
   const [startSkills, setStartSkills] = createSignal<string[]>([]);
   const [startBusy, setStartBusy] = createSignal(false);
 
@@ -150,13 +192,13 @@ export default function Board() {
       }
     } catch (e) {
       // Polling is best-effort; don't spam toasts on transient failures.
-      console.error('acp_list_active_runs failed:', acpErrorMessage(e));
+      console.error("acp_list_active_runs failed:", acpErrorMessage(e));
     }
   }
 
   createEffect(() => {
     const hasActive = Object.values(activeRuns()).some(
-      (r) => r.status === 'pending' || r.status === 'running',
+      (r) => r.status === "pending" || r.status === "running",
     );
     if (!hasActive) return;
     const id = setInterval(() => void pollActiveRuns(), 2000);
@@ -180,7 +222,7 @@ export default function Board() {
         setPanelOpen(true);
       }
     } catch (e) {
-      console.error('acp_latest_run_for_card failed:', acpErrorMessage(e));
+      console.error("acp_latest_run_for_card failed:", acpErrorMessage(e));
     }
   }
 
@@ -190,20 +232,26 @@ export default function Board() {
     setStartDialogOpen(true);
     setStartBusy(false);
     try {
-      const [agents, skills] = await Promise.all([acpListAgents(), acpListSkills()]);
+      const [agents, skills] = await Promise.all([
+        acpListAgents(),
+        acpListSkills(),
+      ]);
       setStartDialogAgents(agents);
       setStartDialogSkills(skills);
       const first = agents.find((a) => a.enabled);
-      setStartAgentName(first?.name ?? '');
+      setStartAgentName(first?.name ?? "");
       setStartSkills(first?.skills ?? []);
       if (!first) {
         toaster.warning({
-          title: 'No agents registered',
-          description: 'Add an agent in Settings → Agents',
+          title: "No agents registered",
+          description: "Add an agent in Settings → Agents",
         });
       }
     } catch (e) {
-      toaster.error({ title: 'Could not load agents', description: acpErrorMessage(e) });
+      toaster.error({
+        title: "Could not load agents",
+        description: acpErrorMessage(e),
+      });
       setStartDialogOpen(false);
     }
   }
@@ -221,20 +269,17 @@ export default function Board() {
       setPanelRun(run);
       setPanelOpen(true);
     } catch (e) {
-      toaster.error({ title: 'Could not start agent', description: acpErrorMessage(e) });
+      toaster.error({
+        title: "Could not start agent",
+        description: acpErrorMessage(e),
+      });
     } finally {
       setStartBusy(false);
     }
   }
 
-  // Ark UI Menu machine. Controlled `open` so we can open programmatically
-  // from Card's onContextMenu / Shift+F10 without a Menu.ContextTrigger
-  // (decision 4: no asChild, no extra DOM node conflicting with use:draggable).
-  // `anchorPoint` is bound reactively so the machine auto-repositions when the
-  // cursor point changes (second right-click, Shift+F10 at card center). This
-  // replaces a manual `reposition()` effect that raced the machine's own
-  // CONTROLLED.OPEN reposition (which used the unset anchorPoint context and
-  // fell back to the default position).
+  // Controlled Ark UI menu: no ContextTrigger, reactive anchor point for
+  // right-click / Shift+F10 and auto-reposition.
   const menuOpen = createMemo(() => currentlyMenuingCard() !== null);
   const menu = useMenu({
     onOpenChange: (details) => {
@@ -265,7 +310,7 @@ export default function Board() {
         e.preventDefault();
       }
     },
-    positioning: { placement: 'bottom-start', gutter: 0 },
+    positioning: { placement: "bottom-start", gutter: 0 },
   });
   createEffect(() => {
     menu.api().setOpen(menuOpen());
@@ -285,7 +330,9 @@ export default function Board() {
     // our position) and past any pending CLOSE microtasks from
     // pointerdown-outside.
     setTimeout(() => {
-      menu.api().reposition({ getAnchorRect: () => ({ width: 0, height: 0, ...point }) });
+      menu.api().reposition({
+        getAnchorRect: () => ({ width: 0, height: 0, ...point }),
+      });
     }, 0);
   }
 
@@ -304,11 +351,11 @@ export default function Board() {
     if (existingId !== null) toaster.dismiss(existingId);
     setPendingSwitchCard(card);
     const id = toaster.create({
-      title: 'Discard unsaved changes?',
-      type: 'warning',
+      title: "Discard unsaved changes?",
+      type: "warning",
       duration: Infinity,
       action: {
-        label: 'Discard',
+        label: "Discard",
         onClick: () => {
           toaster.dismiss(id);
           setPendingSwitchToastId(null);
@@ -331,10 +378,14 @@ export default function Board() {
    * loading flag so Column shows placeholders during the fetch. Used for
    * initial load, sync reloads (skeletons), and error reverts (no skeletons). */
   async function fetchColumn(column: ColumnId, withSkeletons: boolean) {
-    if (withSkeletons) setColumnLoading((prev) => ({ ...prev, [column]: true }));
+    if (withSkeletons) {
+      setColumnLoading((prev) => ({ ...prev, [column]: true }));
+    }
     try {
       const fresh = await listCardsByColumn(column);
-      setCards((prev) => [...prev.filter((c) => c.column !== column), ...fresh]);
+      setCards((
+        prev,
+      ) => [...prev.filter((c) => c.column !== column), ...fresh]);
     } finally {
       setColumnLoading((prev) => ({ ...prev, [column]: false }));
     }
@@ -347,11 +398,17 @@ export default function Board() {
   };
   onMount(() => {
     void listTreeSources().then(setTreeSources).catch((e) =>
-      toaster.error({ title: 'Could not load tree sources', description: acpErrorMessage(e) }),
+      toaster.error({
+        title: "Could not load tree sources",
+        description: acpErrorMessage(e),
+      })
     );
     for (const col of COLUMNS) {
       void fetchColumn(col.id, true).catch((e) =>
-        toaster.error({ title: `Could not load column ${col.id}`, description: acpErrorMessage(e) }),
+        toaster.error({
+          title: `Could not load column ${col.id}`,
+          description: acpErrorMessage(e),
+        })
       );
     }
     void pollActiveRuns();
@@ -364,35 +421,64 @@ export default function Board() {
       const card = await createLocalCard(title, column);
       setCards((prev) => [...prev, card]);
     } catch (e) {
-      toaster.error({ title: 'Add card failed', description: acpErrorMessage(e) });
+      toaster.error({
+        title: "Add card failed",
+        description: acpErrorMessage(e),
+      });
     }
   }
 
-  async function editCard(id: string, title: string, description: string, priority: Priority, treeSourceId: string) {
+  async function editCard(
+    id: string,
+    title: string,
+    description: string,
+    priority: Priority,
+    treeSourceId: string,
+  ) {
     // Optimistic: update the signal immediately so the card reflects the edit
     // without waiting on the backend round-trip.
     setCards((prev) =>
       prev.map((c) =>
         c.id === id
-          ? { ...c, title, description, priority, treeSourceId: treeSourceId || undefined, updatedAt: new Date().toISOString() }
-          : c,
-      ),
+          ? {
+            ...c,
+            title,
+            description,
+            priority,
+            treeSourceId: treeSourceId || undefined,
+            updatedAt: new Date().toISOString(),
+          }
+          : c
+      )
     );
     try {
       await updateCard(id, { title, description, priority, treeSourceId });
     } catch (e) {
       // Revert: re-fetch the card's column to restore true state.
       const card = cards().find((c) => c.id === id);
-      if (card) void fetchColumn(card.column, false).catch((err) =>
-        toaster.error({ title: 'Revert failed', description: acpErrorMessage(err) }),
-      );
-      toaster.error({ title: 'Edit failed', description: acpErrorMessage(e) });
+      if (card) {
+        void fetchColumn(card.column, false).catch((err) =>
+          toaster.error({
+            title: "Revert failed",
+            description: acpErrorMessage(err),
+          })
+        );
+      }
+      toaster.error({ title: "Edit failed", description: acpErrorMessage(e) });
     }
   }
 
   function handleEditSave(result: EditModalResult) {
     const card = currentlyEditingCard();
-    if (card) void editCard(card.id, result.title, result.description, result.priority, result.treeSourceId);
+    if (card) {
+      void editCard(
+        card.id,
+        result.title,
+        result.description,
+        result.priority,
+        result.treeSourceId,
+      );
+    }
     setCurrentlyEditingCard(null);
   }
 
@@ -404,10 +490,18 @@ export default function Board() {
       await deleteCardDb(id);
     } catch (e) {
       // Revert: re-fetch the card's column to restore it.
-      if (card) void fetchColumn(card.column, false).catch((err) =>
-        toaster.error({ title: 'Revert failed', description: acpErrorMessage(err) }),
-      );
-      toaster.error({ title: 'Delete failed', description: acpErrorMessage(e) });
+      if (card) {
+        void fetchColumn(card.column, false).catch((err) =>
+          toaster.error({
+            title: "Revert failed",
+            description: acpErrorMessage(err),
+          })
+        );
+      }
+      toaster.error({
+        title: "Delete failed",
+        description: acpErrorMessage(e),
+      });
     }
   }
 
@@ -418,19 +512,30 @@ export default function Board() {
     // Optimistic: flip the card to the target column immediately so the drag
     // feels instant. Position will be corrected by the backend (appends to end).
     setCards((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, column, updatedAt: new Date().toISOString() } : c)),
+      prev.map((
+        c,
+      ) => (c.id === id
+        ? { ...c, column, updatedAt: new Date().toISOString() }
+        : c)
+      )
     );
     try {
       await moveCardDb(id, column);
     } catch (e) {
       // Revert: re-fetch both affected columns.
       void fetchColumn(oldColumn, false).catch((err) =>
-        toaster.error({ title: 'Revert failed', description: acpErrorMessage(err) }),
+        toaster.error({
+          title: "Revert failed",
+          description: acpErrorMessage(err),
+        })
       );
       void fetchColumn(column, false).catch((err) =>
-        toaster.error({ title: 'Revert failed', description: acpErrorMessage(err) }),
+        toaster.error({
+          title: "Revert failed",
+          description: acpErrorMessage(err),
+        })
       );
-      toaster.error({ title: 'Move failed', description: acpErrorMessage(e) });
+      toaster.error({ title: "Move failed", description: acpErrorMessage(e) });
     }
   }
 
@@ -449,9 +554,15 @@ export default function Board() {
     const src = treeSources().find((s) => s.id === id);
     if (!src) return;
     try {
-      await invoke('open_in_editor', { path: src.path, command: src.editorCommand });
+      await invoke("open_in_editor", {
+        path: src.path,
+        command: src.editorCommand,
+      });
     } catch (e) {
-      toaster.error({ title: 'Open in editor failed', description: acpErrorMessage(e) });
+      toaster.error({
+        title: "Open in editor failed",
+        description: acpErrorMessage(e),
+      });
     }
   }
 
@@ -472,7 +583,10 @@ export default function Board() {
   return (
     <DragDropContext onDragEnd={handleDragEnd}>
       <DragDropSensors>
-        <main id="main-board" class="board-scroll flex-1 flex gap-3 p-3 overflow-y-auto bg-base">
+        <main
+          id="main-board"
+          class="board-scroll flex-1 flex gap-3 p-3 overflow-y-auto bg-base"
+        >
           <For each={COLUMNS}>
             {(column) => (
               <Column
@@ -496,21 +610,31 @@ export default function Board() {
         card={currentlyEditingCard()}
         treeSources={treeSources}
         open={currentlyEditingCard() !== null}
-        onOpenChange={(open) => { if (!open) setCurrentlyEditingCard(null); }}
+        onOpenChange={(open) => {
+          if (!open) setCurrentlyEditingCard(null);
+        }}
         onSave={handleEditSave}
         onDirtyChange={setIsEditingDirty}
       />
       <Menu.RootProvider value={menu}>
         <Menu.Positioner>
-          <Menu.Content data-testid="card-context-menu" class="min-w-[10rem] bg-surface border border-border-subtle rounded-[var(--radius-card)] shadow-2xl py-1">
-            <Menu.Item value="edit" onSelect={editFromMenu} data-testid="menu-item-edit" class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer">
+          <Menu.Content
+            data-testid="card-context-menu"
+            class="min-w-[10rem] bg-surface border border-border-subtle rounded-[var(--radius-card)] shadow-2xl py-1"
+          >
+            <Menu.Item
+              value="edit"
+              onSelect={editFromMenu}
+              data-testid="menu-item-edit"
+              class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer"
+            >
               Edit
             </Menu.Item>
-            <Show when={currentlyMenuingCard()?.repoPath || currentlyMenuingCard()?.treeSourceId}>
+            <Show when={currentlyMenuingCard()?.treeSourceId}>
               <Menu.Item
                 value="agent"
                 data-testid="menu-item-agent"
-                disabled={!!activeRuns()[currentlyMenuingCard()?.id ?? '']}
+                disabled={!!activeRuns()[currentlyMenuingCard()?.id ?? ""]}
                 onSelect={() => {
                   const card = currentlyMenuingCard();
                   if (card) void startAgentRun(card);
@@ -522,7 +646,12 @@ export default function Board() {
               </Menu.Item>
             </Show>
             <Show when={currentlyMenuingCard()?.treeSourceId}>
-              <Menu.Item value="editor" onSelect={openInEditor} data-testid="menu-item-editor" class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer">
+              <Menu.Item
+                value="editor"
+                onSelect={openInEditor}
+                data-testid="menu-item-editor"
+                class="w-full text-left text-sm text-ink px-3 py-1.5 hover:bg-elevated transition-colors cursor-pointer"
+              >
                 Open in editor
               </Menu.Item>
             </Show>
@@ -568,7 +697,10 @@ export default function Board() {
                   ×
                 </button>
               </div>
-              <label class="block text-xs font-semibold text-ink-secondary" for="start-agent-picker">
+              <label
+                class="block text-xs font-semibold text-ink-secondary"
+                for="start-agent-picker"
+              >
                 Agent
               </label>
               <select
@@ -578,14 +710,17 @@ export default function Board() {
                 onChange={(e) => {
                   const name = e.currentTarget.value;
                   setStartAgentName(name);
-                  const agent = startDialogAgents().find((a) => a.name === name);
+                  const agent = startDialogAgents().find((a) =>
+                    a.name === name
+                  );
                   setStartSkills(agent?.skills ?? []);
                 }}
               >
                 <For each={startDialogAgents()}>
                   {(agent) => (
                     <option value={agent.name} disabled={!agent.enabled}>
-                      {agent.name}{agent.enabled ? '' : ' (disabled)'}
+                      {agent.name}
+                      {agent.enabled ? "" : " (disabled)"}
                     </option>
                   )}
                 </For>
@@ -593,9 +728,9 @@ export default function Board() {
               <Show when={startDialogSkills().length > 0 && startAgentName()}>
                 <SkillPicker
                   available={startDialogSkills()}
-                  agentSkills={
-                    startDialogAgents().find((a) => a.name === startAgentName())?.skills ?? []
-                  }
+                  agentSkills={startDialogAgents().find((a) =>
+                    a.name === startAgentName()
+                  )?.skills ?? []}
                   selected={startSkills()}
                   onChange={setStartSkills}
                 />
@@ -614,7 +749,7 @@ export default function Board() {
                   disabled={!startAgentName() || startBusy()}
                   onClick={() => void confirmStartAgentRun()}
                 >
-                  {startBusy() ? 'Starting…' : 'Run agent'}
+                  {startBusy() ? "Starting…" : "Run agent"}
                 </button>
               </div>
             </div>

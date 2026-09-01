@@ -1,16 +1,16 @@
-import { Show, createSignal, onCleanup, onMount } from 'solid-js';
-import { getAllSettings, setSetting } from '../../db.ts';
+import { createSignal, onCleanup, onMount, Show } from "solid-js";
+import { getAllSettings, setSetting, invalidatePermissionTimeoutCache } from "../../db.ts";
 
 const INPUT =
-  'w-full text-sm rounded px-2 py-1.5 bg-base text-ink placeholder:text-ink-secondary border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent';
+  "w-full text-sm rounded px-2 py-1.5 bg-base text-ink placeholder:text-ink-secondary border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent";
 
 /** Settings section for ACP configuration: default agent, auto-cleanup,
  * skills directory, permission timeout, prune-orphans. Stored in the
  * existing settings KV table. */
 export default function AcpSettings() {
-  const [defaultAgent, setDefaultAgent] = createSignal('claude-code');
+  const [defaultAgent, setDefaultAgent] = createSignal("claude-code");
   const [autoCleanup, setAutoCleanup] = createSignal(true);
-  const [skillsDir, setSkillsDir] = createSignal('');
+  const [skillsDir, setSkillsDir] = createSignal("");
   const [permissionTimeout, setPermissionTimeout] = createSignal(300);
   const [pruneOrphans, setPruneOrphans] = createSignal(false);
   const [saved, setSaved] = createSignal(false);
@@ -21,11 +21,13 @@ export default function AcpSettings() {
   onMount(() => {
     void (async () => {
       const s = await getAllSettings();
-      setDefaultAgent(s['acp_default_agent'] ?? 'claude-code');
-      setAutoCleanup(s['acp_auto_cleanup'] !== 'false');
-      setSkillsDir(s['acp_skills_dir'] ?? '');
-      setPermissionTimeout(parseInt(s['acp_permission_timeout'] ?? '300', 10) || 300);
-      setPruneOrphans(s['acp_prune_orphans'] === 'true');
+      setDefaultAgent(s["acp_default_agent"] ?? "claude-code");
+      setAutoCleanup(s["acp_auto_cleanup"] !== "false");
+      setSkillsDir(s["acp_skills_dir"] ?? "");
+      setPermissionTimeout(
+        parseInt(s["acp_permission_timeout"] ?? "300", 10) || 300,
+      );
+      setPruneOrphans(s["acp_prune_orphans"] === "true");
     })();
   });
 
@@ -36,11 +38,12 @@ export default function AcpSettings() {
 
   async function save() {
     try {
-      await setSetting('acp_default_agent', defaultAgent());
-      await setSetting('acp_auto_cleanup', autoCleanup() ? 'true' : 'false');
-      await setSetting('acp_skills_dir', skillsDir());
-      await setSetting('acp_permission_timeout', String(permissionTimeout()));
-      await setSetting('acp_prune_orphans', pruneOrphans() ? 'true' : 'false');
+      await setSetting("acp_default_agent", defaultAgent());
+      await setSetting("acp_auto_cleanup", autoCleanup() ? "true" : "false");
+      await setSetting("acp_skills_dir", skillsDir());
+      await setSetting("acp_permission_timeout", String(permissionTimeout()));
+      invalidatePermissionTimeoutCache();
+      await setSetting("acp_prune_orphans", pruneOrphans() ? "true" : "false");
       setSaved(true);
       if (savedTimer) clearTimeout(savedTimer);
       savedTimer = setTimeout(() => setSaved(false), 2000);
@@ -51,10 +54,15 @@ export default function AcpSettings() {
 
   return (
     <fieldset class="border border-border-subtle rounded-[var(--radius-card)] p-3">
-      <legend class="text-xs font-semibold text-ink-secondary px-1">Agent Settings</legend>
+      <legend class="text-xs font-semibold text-ink-secondary px-1">
+        Agent Settings
+      </legend>
       <div class="flex flex-col gap-3">
         <div>
-          <label class="block text-xs font-semibold text-ink-secondary mb-1" for="acp-default-agent">
+          <label
+            class="block text-xs font-semibold text-ink-secondary mb-1"
+            for="acp-default-agent"
+          >
             Default agent
           </label>
           <input
@@ -76,7 +84,10 @@ export default function AcpSettings() {
           Auto-cleanup dangling runs on startup
         </label>
         <div>
-          <label class="block text-xs font-semibold text-ink-secondary mb-1" for="acp-skills-dir">
+          <label
+            class="block text-xs font-semibold text-ink-secondary mb-1"
+            for="acp-skills-dir"
+          >
             Skills directory (empty = ~/.agents/skills/)
           </label>
           <input
@@ -89,7 +100,10 @@ export default function AcpSettings() {
           />
         </div>
         <div>
-          <label class="block text-xs font-semibold text-ink-secondary mb-1" for="acp-perm-timeout">
+          <label
+            class="block text-xs font-semibold text-ink-secondary mb-1"
+            for="acp-perm-timeout"
+          >
             Permission timeout (seconds)
           </label>
           <input
@@ -99,7 +113,8 @@ export default function AcpSettings() {
             value={permissionTimeout()}
             min={30}
             max={3600}
-            onInput={(e) => setPermissionTimeout(parseInt(e.currentTarget.value, 10) || 300)}
+            onInput={(e) =>
+              setPermissionTimeout(parseInt(e.currentTarget.value, 10) || 300)}
           />
         </div>
         <label class="flex items-center gap-2 text-sm text-ink">
