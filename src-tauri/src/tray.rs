@@ -1,19 +1,23 @@
 //! System tray icon with a Show/Hide/Quit menu.
 //!
-//! Left-click on the tray icon toggles the main window. Right-click opens the
-//! menu. The tray is built once in `setup` and lives for the app's lifetime.
+//! Left-click toggles the main window; right-click opens the menu. Built once
+//! in `setup` and lives for the app's lifetime.
 
 use tauri::{
-    AppHandle, Manager, Runtime,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Manager, Runtime,
 };
 
-/// Tooltip shown when hovering the tray icon.
+/// Tray icon hover tooltip.
 const TOOLTIP: &str = "Kansolo";
 
 /// Build and install the tray icon + menu. Called once from `setup`.
-pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+///
+/// Returns an error (rather than panicking) if the default window icon
+/// isn't configured, so a misconfigured build surfaces as a setup failure
+/// instead of a crash.
+pub fn install<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::error::Error>> {
     let show = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", "Hide", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -22,7 +26,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let icon = app
         .default_window_icon()
         .cloned()
-        .expect("default window icon must be configured");
+        .ok_or_else(|| "default window icon must be configured")?;
 
     TrayIconBuilder::with_id("main-tray")
         .icon(icon)
@@ -32,7 +36,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_window(app),
             "hide" => hide_window(app),
-            "quit" => app.exit(0),
+            "quit" => quit_app(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -49,7 +53,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Show the main window and focus it.
+/// Bring the main window to the foreground.
 fn show_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
@@ -57,14 +61,14 @@ fn show_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Hide the main window (keeps the app running in the tray).
+/// Hide the main window while the app keeps running in the tray.
 fn hide_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.hide();
     }
 }
 
-/// Toggle the main window visibility.
+/// Toggle main window visibility.
 fn toggle_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(win) = app.get_webview_window("main") {
         if win.is_visible().unwrap_or(false) {
@@ -74,4 +78,35 @@ fn toggle_window<R: Runtime>(app: &AppHandle<R>) {
             let _ = win.set_focus();
         }
     }
+}
+
+/// Quit the app: cancel active runs so card locks release, then exit.
+/// Best-effort — shutdown is bounded by a 5s timeout per run.
+fn quit_app<R: Runtime>(app: &AppHandle<R>) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        // Cancel active runs and collect their IDs.
+        let active_ids: Vec<String> = match handle.try_state::<crate::runner::RunnerState>() {
+            Some(state) => state.core.shutdown().await,
+            None => Vec::new(),
+        };
+        // Mark each reaped run failed so the card lock releases.
+        if !active_ids.is_empty() {
+            if let Ok(conn) = crate::db::open_db(&handle) {
+                let now = crate::db::now_iso();
+                for id in &active_ids {
+                    let _ = crate::db::agent_runs::update_status(
+                        &conn,
+                        id,
+                        "failed",
+                        None,
+                        None,
+                        Some("tasker quitting"),
+                        Some(&now),
+                    );
+                }
+            }
+        }
+        handle.exit(0);
+    });
 }

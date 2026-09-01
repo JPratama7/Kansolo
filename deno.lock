@@ -1,22 +1,26 @@
 {
   "version": "5",
   "specifiers": {
+    "jsr:@std/assert@1": "1.0.19",
     "jsr:@std/assert@^1.0.19": "1.0.19",
     "jsr:@std/internal@^1.0.12": "1.0.14",
     "jsr:@std/testing@1": "1.0.20",
     "npm:@ark-ui/solid@^5.39.0": "5.39.0_solid-js@1.9.15",
+    "npm:@git-diff-view/solid@~0.1.7": "0.1.7_solid-js@1.9.15_react@19.2.8",
     "npm:@playwright/test@^1.62.1": "1.62.1",
     "npm:@solidjs/testing-library@~0.8.10": "0.8.10_solid-js@1.9.15",
     "npm:@tailwindcss/vite@^4.3.3": "4.3.3_vite@8.2.2__esbuild@0.25.12__terser@5.51.0_terser@5.51.0",
     "npm:@tauri-apps/api@2": "2.11.1",
     "npm:@tauri-apps/cli@*": "2.11.4",
     "npm:@tauri-apps/cli@2": "2.11.4",
-    "npm:@tauri-apps/plugin-opener@2": "2.5.4",
     "npm:@thisbeyond/solid-dnd@0.2": "0.2.0_solid-js@1.9.15",
     "npm:brotli-size@*": "4.0.0",
     "npm:esbuild@*": "0.25.12",
     "npm:gzip-size@*": "6.0.0",
     "npm:happy-dom@^20.11.6": "20.11.6",
+    "npm:highlight.js@11.11": "11.11.1",
+    "npm:lowlight@^3.3.0": "3.3.0",
+    "npm:micromark@*": "4.0.2",
     "npm:micromark@^4.0.2": "4.0.2",
     "npm:playwright@*": "1.62.1",
     "npm:rolldown@1.2.5": "1.2.5",
@@ -45,7 +49,7 @@
     "@std/testing@1.0.20": {
       "integrity": "21380ed438672762e4ec549cbf4fe41c5b68f5598773a30b64abe7375513e721",
       "dependencies": [
-        "jsr:@std/assert"
+        "jsr:@std/assert@^1.0.19"
       ]
     }
   },
@@ -410,6 +414,35 @@
     "@floating-ui/utils@0.2.12": {
       "integrity": "sha512-HpCo8tmWzLVad5s2d19EhAz5zqrrQ6s69qd6moPMQvkOuSwDT1YgRfWSVuc4ennqrgv3OHppiOGMQ7oC13yIww=="
     },
+    "@git-diff-view/core@0.1.7": {
+      "integrity": "sha512-ZW/kumNoUQ8+DgawYhcrABa7TOALYzn3pe723uTHSy6/r35qAwgswJxF1bkdV9Zr+KHuhlFeRLiVhjij59qdIA==",
+      "dependencies": [
+        "@git-diff-view/lowlight",
+        "fast-diff",
+        "highlight.js",
+        "lowlight"
+      ]
+    },
+    "@git-diff-view/lowlight@0.1.7": {
+      "integrity": "sha512-Rkv2ERr83xTSsjlrJxjYVWndREEARG11viTrJ7qyUU+lnPPmSNF1aemp1lKiOLs6sNCeJJdIMhxLFJtKfmRIZw==",
+      "dependencies": [
+        "@types/hast",
+        "highlight.js",
+        "lowlight"
+      ]
+    },
+    "@git-diff-view/solid@0.1.7_solid-js@1.9.15_react@19.2.8": {
+      "integrity": "sha512-kSmv3ZdnueYgR2Jo8VeUcN4eyOSWwQHiLMjlzlaLyJ0JorbiY2FrbpvQaBAq4cf85dBUmzc8ero0yQI0+DI+aw==",
+      "dependencies": [
+        "@git-diff-view/core",
+        "@types/hast",
+        "fast-diff",
+        "highlight.js",
+        "lowlight",
+        "reactivity-store",
+        "solid-js"
+      ]
+    },
     "@internationalized/date@3.12.3": {
       "integrity": "sha512-fuLX+3ZKLsxI73y8b01EG/WjHb6gE6weCqlfawPO27kBWGMh9G1yH6Csv1uU7/cac9H2GHmOMt6CjmuQ1aia4Q==",
       "dependencies": [
@@ -738,12 +771,6 @@
       ],
       "bin": true
     },
-    "@tauri-apps/plugin-opener@2.5.4": {
-      "integrity": "sha512-1HnPkb+AmgO29HBazm4uPLKB+r7zzcTBW1d0fyYp1uP+jwtpoiNDGKMMzz58SFp49nOIrxdE3aUJtT57lfO9CQ==",
-      "dependencies": [
-        "@tauri-apps/api"
-      ]
-    },
     "@testing-library/dom@10.4.1": {
       "integrity": "sha512-o4PXJQidqJl82ckFaXUeoAW+XysPLauYI43Abki5hABd853iMhitooc6znOnczgbTYmEP6U6/y1ZyKAIsvMKGg==",
       "dependencies": [
@@ -814,6 +841,12 @@
     "@types/estree@1.0.9": {
       "integrity": "sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg=="
     },
+    "@types/hast@3.0.5": {
+      "integrity": "sha512-rp/ezSWaD1m44dPKICGhiskI13nVr7qTloFwDa/IYkhhf5nzwP+zIQcIJh3WIFSBOy/H1PzB40jPjMDksN4F+g==",
+      "dependencies": [
+        "@types/unist"
+      ]
+    },
     "@types/ms@2.1.0": {
       "integrity": "sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA=="
     },
@@ -822,6 +855,9 @@
       "dependencies": [
         "undici-types"
       ]
+    },
+    "@types/unist@3.0.3": {
+      "integrity": "sha512-ko/gIFJRv177XgZsZcBwnqJN5x/Gien8qNOn0D5bQU/zAzVf9Zt3BlcUiLqhV9y4ARk0GbT3tnUiPNgnTXzc/Q=="
     },
     "@types/whatwg-mimetype@3.0.2": {
       "integrity": "sha512-c2AKvDT8ToxLIOUlN51gTiHXflsfIFisS4pO7pDPoKouJCESkhZnEy623gwP9laCy5lnLDAw1vAzu2vM2YLOrA=="
@@ -887,6 +923,15 @@
         "convert-source-map@2.0.0",
         "tinyrainbow"
       ]
+    },
+    "@vue/reactivity@3.5.42": {
+      "integrity": "sha512-TzNNfKpb7hDxbQltwAut8VDQA5YP+BuRlxntHUuRjyKwlMvmAPbs3unhCvieijifY6vFfVBwsS7wG/C7uq+bEQ==",
+      "dependencies": [
+        "@vue/shared"
+      ]
+    },
+    "@vue/shared@3.5.42": {
+      "integrity": "sha512-2rPxex1jQf4jvl9MOHl6YaXCPcrNqz/FstMOEh3QWY+/OME9nQTvl9WYeCwhW7AFjaR0SnngZGlp/wkR6rkI6g=="
     },
     "@zag-js/accordion@1.43.3": {
       "integrity": "sha512-J6rGbMPXhYDa2dLgp66DPpwC3OcNAJH71kuGakz7SfCvQWiR9lIyB26G/QdSjJjf0rVARM8rN90e5PxZjYdWjA==",
@@ -1871,6 +1916,9 @@
     "expect-type@1.4.0": {
       "integrity": "sha512-KfYbmpRm0VbLjEvVa9yGwCi9GI34xvi7A/HXYWQO65CSD2u3MczUJSuwXKFIxlGsgBQizV9q5J9NHj4VG0n+pA=="
     },
+    "fast-diff@1.3.0": {
+      "integrity": "sha512-VxPP4NqbUjj6MaAOafWeUn2cXWLcCtljklUtZf0Ind4XQ+QPtmA0b18zZy0jIQx+ExRVCR/ZQpBmik5lXshNsw=="
+    },
     "fdir@6.5.0_picomatch@4.0.5": {
       "integrity": "sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==",
       "dependencies": [
@@ -1940,6 +1988,9 @@
     },
     "has-flag@4.0.0": {
       "integrity": "sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ=="
+    },
+    "highlight.js@11.11.1": {
+      "integrity": "sha512-Xwwo44whKBVCYoliBQwaPvtd/2tYFkRQtXDWj1nackaV2JPXx3L0+Jvd8/qCJ2p+ML0/XVkJ2q+Mr+UVdpJK5w=="
     },
     "html-entities@2.3.3": {
       "integrity": "sha512-DV5Ln36z34NNTDgnz0EWGBLZENelNAtkiFA4kyNOG2tDI6Mz1uSWiq1wAKdyjnJwyDiDO7Fa2SO1CTxPXL8VxA=="
@@ -2145,6 +2196,14 @@
     },
     "lodash@4.18.1": {
       "integrity": "sha512-dMInicTPVE8d1e5otfwmmjlxkZoUpiVLwyeTdUsi/Caj/gfzzblBcCE5sRHV/AsjuCmxWrte2TNGSYuCeCq+0Q=="
+    },
+    "lowlight@3.3.0": {
+      "integrity": "sha512-0JNhgFoPvP6U6lE/UdVsSq99tn6DhjjpAj5MxG49ewd2mOBVtwWYIT8ClyABhq198aXXODMU6Ox8DrGy/CpTZQ==",
+      "dependencies": [
+        "@types/hast",
+        "devlop",
+        "highlight.js"
+      ]
     },
     "lru-cache@5.1.1": {
       "integrity": "sha512-KpNARQA3Iwv+jTA0utUVVbrh+Jlrr1Fv0e56GGzAFOXN7dk/FviaDW8LHmK52DlcH4WP2n6gI8vN1aesBFgo9w==",
@@ -2439,6 +2498,18 @@
     "react-is@17.0.2": {
       "integrity": "sha512-w2GsyukL62IJnlaff/nRegPQR94C/XXamvMWmSHRJ4y7Ts/4ocGRmTHvOs8PSE6pB3dWOrD/nueuU5sduBsQ4w=="
     },
+    "react@19.2.8": {
+      "integrity": "sha512-PWaYA1L/q9u2u7xYQi+Y3L3Yfnie7XyLeaJICV1MGD6LprsBxcAqGjYyr0eY3p+QdsA+x/Irkt4Qif8D63+Sbw=="
+    },
+    "reactivity-store@0.4.0_react@19.2.8": {
+      "integrity": "sha512-uL9uoREOBg2o4zUa8vMU0AbvAOk0osPloizscmyZqMvJzcuuKX3ELFYYr1DX8gAcfvlhPduz4QuLZn1eChCu4Q==",
+      "dependencies": [
+        "@vue/reactivity",
+        "@vue/shared",
+        "react",
+        "use-sync-external-store"
+      ]
+    },
     "require-directory@2.1.1": {
       "integrity": "sha512-fGxEI7+wsG9xrvdjsrlmL22OMTTiHRwAMroiEeMgq8gzoLC/PQr7RsRDSTLUg/bZAZtF+TVIkHc6/4RIKrui+Q=="
     },
@@ -2634,6 +2705,12 @@
     "uqr@0.1.3": {
       "integrity": "sha512-0rjE8iEJe4YmT9TOhwsZtqCMRLc5DXZUI2UEYUUg63ikBkqqE5EYWaI0etFe/5KUcmcYwLih2RND1kq+hrUJXA=="
     },
+    "use-sync-external-store@1.6.0_react@19.2.8": {
+      "integrity": "sha512-Pp6GSwGP/NrPIrxVFAIkOQeyw8lFenOHijQWkUTrDvrF4ALqylP2C/KCkeS9dpUM3KvYRQhna5vt7IL95+ZQ9w==",
+      "dependencies": [
+        "react"
+      ]
+    },
     "vite-plugin-solid@2.11.14_solid-js@1.9.15_vite@8.2.2__esbuild@0.25.12__terser@5.51.0_terser@5.51.0": {
       "integrity": "sha512-7ZVBt8rpoyqmlwin2kRIUveaHoF6/kulY7gsnD+qFh4nS29V4OPAnw+ojoAspXIjObiL9o1xh9a/nTuYHm02Rw==",
       "dependencies": [
@@ -2757,14 +2834,16 @@
     "packageJson": {
       "dependencies": [
         "npm:@ark-ui/solid@^5.39.0",
+        "npm:@git-diff-view/solid@~0.1.7",
         "npm:@playwright/test@^1.62.1",
         "npm:@solidjs/testing-library@~0.8.10",
         "npm:@tailwindcss/vite@^4.3.3",
         "npm:@tauri-apps/api@2",
         "npm:@tauri-apps/cli@2",
-        "npm:@tauri-apps/plugin-opener@2",
         "npm:@thisbeyond/solid-dnd@0.2",
         "npm:happy-dom@^20.11.6",
+        "npm:highlight.js@11.11",
+        "npm:lowlight@^3.3.0",
         "npm:micromark@^4.0.2",
         "npm:solid-js@^1.9.3",
         "npm:tailwindcss@^4.3.3",

@@ -8,4 +8,13 @@ src-tauri/foo.txt
 .vscode/
 .plan/
 test-results/
-TODO.md
+.information/
+# Documentation: ignore all markdown except README (LICENSE isn't markdown)
+*.md
+!README.md
+docs/
+# AI planner artifacts (kept locally, never committed)
+plan.db
+plan.json
+plan.mmd
+spike-result.txt

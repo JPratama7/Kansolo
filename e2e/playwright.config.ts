@@ -1,4 +1,4 @@
-import { defineConfig, devices } from '@playwright/test';
+import { defineConfig, devices } from "@playwright/test";
 
 /**
  * Playwright E2E config for Kansolo.
@@ -20,7 +20,7 @@ import { defineConfig, devices } from '@playwright/test';
  *     separately (out of scope for this step).
  *
  * Run: `deno task test:e2e` (starts the dev server + Playwright).
- * The dev server is expected to already be running on port 1420, OR
+ * Dev server is expected to already be running on port 1420, OR
  * Playwright will start it via the `webServer` config below.
  */
 
@@ -28,37 +28,37 @@ const PORT = 1420;
 const BASE_URL = `http://localhost:${PORT}`;
 
 export default defineConfig({
-  testDir: './tests',
+  testDir: "./tests",
   fullyParallel: false, // shared dev server + mocked DB state
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   workers: 1,
-  reporter: 'list',
+  reporter: "list",
   timeout: 30_000,
   expect: { timeout: 5_000 },
 
   use: {
     baseURL: BASE_URL,
-    trace: 'on-first-retry',
-    screenshot: 'only-on-failure',
+    trace: "on-first-retry",
+    screenshot: "only-on-failure",
     // Mock Tauri invoke before each document loads. Individual specs can
     // override by calling page.addInitScript with their own handlers.
   },
 
   projects: [
     {
-      name: 'chromium',
-      use: { ...devices['Desktop Chrome'] },
+      name: "chromium",
+      use: { ...devices["Desktop Chrome"] },
     },
   ],
 
   // Auto-start the Vite dev server if it isn't already running.
   webServer: {
-    command: 'deno task dev',
+    command: "deno task dev",
     url: BASE_URL,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
-    stdout: 'ignore',
-    stderr: 'pipe',
+    stdout: "ignore",
+    stderr: "pipe",
   },
 });

@@ -1,14 +1,11 @@
-//! Status & priority mapping logic — pure port of `src/mapping.ts`.
-//!
-//! No I/O, no Tauri commands, no DB access. Just functions, types, and unit
-//! tests. Mirrors the TypeScript source case-for-case so behaviour stays
-//! identical across the two language frontends.
+//! Status and priority mapping between upstream names and the local kanban
+//! board. No I/O, no Tauri commands, no DB access.
 
 use serde::{Deserialize, Serialize};
 
 /// Kanban column contract shared with the TypeScript side (camelCase JSON).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct StatusMapping {
     pub backlog: Vec<String>,
     pub ongoing: Vec<String>,
@@ -22,13 +19,13 @@ impl StatusMapping {
     }
 }
 
-/// Unmatched statuses land here (catch-all rule).
+/// Catch-all column for unmatched statuses.
 pub const CATCH_ALL_COLUMN: &str = "backlog";
 
 /// Canonical column ids in priority order.
 pub const ALL_COLUMNS: [&str; 3] = ["backlog", "ongoing", "done"];
 
-/// Default when nothing matches and the input is empty/unknown.
+/// Default priority when nothing matches or the input is empty/unknown.
 pub const DEFAULT_PRIORITY: &str = "medium";
 
 /// Synonyms for each priority, matched case-insensitively against the Jira
@@ -39,7 +36,10 @@ pub const PRIORITY_SYNONYMS: [(&str, &[&str]); 4] = [
     ("low", &["low", "lowest", "minor", "trivial"]),
     ("medium", &["medium", "normal", "default"]),
     ("high", &["high", "higher", "major"]),
-    ("urgent", &["urgent", "highest", "critical", "blocker", "emergency"]),
+    (
+        "urgent",
+        &["urgent", "highest", "critical", "blocker", "emergency"],
+    ),
 ];
 
 /// Resolve a Jira status name to its kanban column via a case-insensitive
@@ -98,11 +98,7 @@ pub fn resolve_priority(priority_name: Option<&str>) -> &'static str {
 mod tests {
     use super::*;
 
-    fn mapping(
-        backlog: &[&str],
-        ongoing: &[&str],
-        done: &[&str],
-    ) -> StatusMapping {
+    fn mapping(backlog: &[&str], ongoing: &[&str], done: &[&str]) -> StatusMapping {
         StatusMapping {
             backlog: backlog.iter().map(|s| s.to_string()).collect(),
             ongoing: ongoing.iter().map(|s| s.to_string()).collect(),
@@ -191,5 +187,3 @@ mod tests {
         assert!(!is_status_mapped("   ", &m));
     }
 }
-
-
