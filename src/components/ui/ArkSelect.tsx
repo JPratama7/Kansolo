@@ -15,7 +15,7 @@ interface ArkSelectProps {
   class?: string;
 }
 
-/** Reactive Ark UI Select wrapper that rebuilds its collection when `items` change. */
+/** Reactive Ark UI Select wrapper; rebuilds its collection when `items` change. */
 export function ArkSelect(props: ArkSelectProps): JSX.Element {
   const collection = createMemo(() =>
     createListCollection({ items: props.items })

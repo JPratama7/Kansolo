@@ -35,7 +35,7 @@ test("AgentRunPanel.pollUpdates: in-flight guard prevents double-append", async 
   let inFlight = false;
   let invocations = 0;
   let appended = 0;
-  // A gate of pending resolvers so we can release them all at once.
+  // Gate of pending resolvers so we can release them all at once.
   let gate: (() => void)[] = [];
   const queue: unknown[] = [{ type: "sessionUpdate", text: "batch-1" }];
 
