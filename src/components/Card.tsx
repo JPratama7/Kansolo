@@ -1,6 +1,6 @@
 import { Show } from "solid-js";
 import { createDraggable, useDragDropContext } from "@thisbeyond/solid-dnd";
-import { micromark } from "micromark";
+import Markdown from "./Markdown.tsx";
 import type { KanbanCard, Priority, TreeSource } from "../types.ts";
 import type { AgentRun } from "../db.ts";
 import AgentBadge from "./AgentBadge.tsx";
@@ -80,9 +80,9 @@ export default function Card(props: CardProps) {
       <div class="px-3 py-2">
         <p class="text-sm text-ink leading-snug">{card.title}</p>
         <Show when={card.description}>
-          <div
+          <Markdown
+            content={card.description}
             class="md-preview text-xs text-ink-secondary mt-1 line-clamp-2"
-            innerHTML={micromark(card.description)}
           />
         </Show>
         <Show when={card.treeSourceId}>

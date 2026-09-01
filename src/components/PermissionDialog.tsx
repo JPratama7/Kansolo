@@ -1,7 +1,9 @@
-import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Dialog } from "@ark-ui/solid/dialog";
-import { acpCancelRun, acpErrorMessage, acpRespondPermission } from "../db.ts";
+import { acpCancelRun, acpErrorMessage, acpPermissionTimeoutMs, acpRespondPermission } from "../db.ts";
+import type { AcpUpdateEvent } from "../types.ts";
+import { safeListen } from "../event.ts";
 import { toaster } from "./ui/toaster.ts";
 
 /** One queued permission request awaiting user mediation. The `timeoutMs`
@@ -74,6 +76,31 @@ export default function PermissionDialog() {
   const head = permissionHead;
   const [remaining, setRemaining] = createSignal(0);
   const [stopping, setStopping] = createSignal(false);
+
+  onMount(() => {
+    let cancelled = false;
+    const unlistenPromise = safeListen<AcpUpdateEvent>("acp:update", async (event) => {
+      if (cancelled) return;
+      const u = event.payload.update;
+      if (u.type === "permissionRequest") {
+        const timeoutMs = u.timeoutMs ?? (await acpPermissionTimeoutMs());
+        enqueuePermission({
+          runId: event.payload.runId,
+          requestId: u.requestId,
+          description: u.description,
+          timeoutMs,
+        });
+      } else if (u.type === "permissionTimeout") {
+        const headItem = permissionHeadSignal();
+        if (headItem) dequeuePermission(headItem.requestId);
+      }
+    });
+
+    onCleanup(() => {
+      cancelled = true;
+      unlistenPromise.then((fn) => fn());
+    });
+  });
 
   let timer: ReturnType<typeof setInterval> | undefined;
   createEffect(() => {

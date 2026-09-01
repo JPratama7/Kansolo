@@ -1,6 +1,6 @@
 import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { Portal } from "solid-js/web";
-import { micromark } from "micromark";
+import Markdown from "./Markdown.tsx";
 import { Dialog } from "@ark-ui/solid/dialog";
 import { Tabs } from "@ark-ui/solid/tabs";
 import type { KanbanCard, Priority, TreeSource } from "../types.ts";
@@ -187,7 +187,7 @@ function EditModalForm(props: EditModalFormProps) {
                 when={description().trim()}
                 fallback={<p class="text-ink-muted">No description.</p>}
               >
-                <div innerHTML={micromark(description())} />
+                <Markdown content={description()} />
               </Show>
             </div>
           }

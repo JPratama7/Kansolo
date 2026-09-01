@@ -141,6 +141,17 @@ export type RunUpdate =
   | { type: "permissionTimeout" }
   | { type: "waitingForInput"; stopReason: string };
 
+/** Tauri event payload for a single run update. */
+export interface AcpUpdateEvent {
+  runId: string;
+  update: RunUpdate;
+}
+
+/** Tauri event payload when the active runs set changes. */
+export interface AcpActiveRunsChangedEvent {
+  runs: AgentRun[];
+}
+
 /** Result of a diff request between agent branch and main. */
 export interface DiffResult {
   text: string;

@@ -14,12 +14,21 @@ import {
   DragOverlay,
   useDragDropContext,
 } from "@thisbeyond/solid-dnd";
-import { micromark } from "micromark";
+import Markdown from "./Markdown.tsx";
 import { Menu, useMenu } from "@ark-ui/solid/menu";
 import { invoke } from "@tauri-apps/api/core";
 import { toaster } from "./ui/toaster.ts";
-import type { ColumnId, KanbanCard, Priority, TreeSource } from "../types.ts";
-import type { Agent, AgentRun, SkillManifest } from "../db.ts";
+import type {
+  Agent,
+  AgentRun,
+  AcpActiveRunsChangedEvent,
+  ColumnId,
+  KanbanCard,
+  Priority,
+  SkillManifest,
+  TreeSource,
+} from "../types.ts";
+import { safeListen } from "../event.ts";
 import { COLUMNS } from "../columns.ts";
 import {
   acpCreateRun,
@@ -85,9 +94,9 @@ function CardDragOverlay(props: { treeSources: () => TreeSource[] }) {
             <div class="px-3 py-2">
               <p class="text-sm text-ink leading-snug">{card().title}</p>
               <Show when={card().description}>
-                <div
+                <Markdown
+                  content={card().description}
                   class="md-preview text-xs text-ink-secondary mt-1 line-clamp-2"
-                  innerHTML={micromark(card().description)}
                 />
               </Show>
               <Show when={card().treeSourceId}>
@@ -174,35 +183,45 @@ export default function Board() {
   const [startSkills, setStartSkills] = createSignal<string[]>([]);
   const [startBusy, setStartBusy] = createSignal(false);
 
-  /** Poll active runs while any exists, then refresh badges + panel. */
-  async function pollActiveRuns() {
+  function applyActiveRuns(runs: AgentRun[]) {
+    const map: Record<string, AgentRun> = {};
+    for (const r of runs) map[r.cardId] = r;
+    setActiveRuns(map);
+    // If the panel is open and the run is still active, refresh panelRun so
+    // status/terminal fields stay live without a separate fetch.
+    if (panelOpen()) {
+      const pr = panelRun();
+      if (pr) {
+        const updated = map[pr.cardId];
+        if (updated && updated.id === pr.id) setPanelRun(updated);
+      }
+    }
+  }
+
+  /** Load active runs once (fallback/reconnect). */
+  async function loadActiveRuns() {
     try {
       const runs = await acpListActiveRuns();
-      const map: Record<string, AgentRun> = {};
-      for (const r of runs) map[r.cardId] = r;
-      setActiveRuns(map);
-      // If the panel is open and the polled run is still active, refresh
-      // panelRun so status/terminal fields stay live without a separate fetch.
-      if (panelOpen()) {
-        const pr = panelRun();
-        if (pr) {
-          const updated = map[pr.cardId];
-          if (updated && updated.id === pr.id) setPanelRun(updated);
-        }
-      }
+      applyActiveRuns(Array.isArray(runs) ? runs : []);
     } catch (e) {
-      // Polling is best-effort; don't spam toasts on transient failures.
       console.error("acp_list_active_runs failed:", acpErrorMessage(e));
     }
   }
 
-  createEffect(() => {
-    const hasActive = Object.values(activeRuns()).some(
-      (r) => r.status === "pending" || r.status === "running",
+  // Initial load + push listener for active-runs changes.
+  onMount(() => {
+    void loadActiveRuns();
+
+    const unlistenPromise = safeListen<AcpActiveRunsChangedEvent>(
+      "acp:active_runs_changed",
+      (event) => {
+        applyActiveRuns(Array.isArray(event.payload.runs) ? event.payload.runs : []);
+      },
     );
-    if (!hasActive) return;
-    const id = setInterval(() => void pollActiveRuns(), 2000);
-    onCleanup(() => clearInterval(id));
+
+    onCleanup(() => {
+      unlistenPromise.then((fn) => fn());
+    });
   });
 
   /** Open the run panel for a card's run. Falls back to the latest run
@@ -265,7 +284,7 @@ export default function Board() {
     try {
       const run = await acpCreateRun(card.id, agent.name, startSkills());
       setStartDialogOpen(false);
-      await pollActiveRuns();
+      setActiveRuns((prev) => ({ ...prev, [card.id]: run }));
       setPanelRun(run);
       setPanelOpen(true);
     } catch (e) {
@@ -411,7 +430,6 @@ export default function Board() {
         })
       );
     }
-    void pollActiveRuns();
   });
 
   async function addCard(title: string, column: ColumnId) {

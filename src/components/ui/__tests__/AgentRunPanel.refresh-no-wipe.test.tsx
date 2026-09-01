@@ -25,10 +25,10 @@ const baseRun = (status: string): AgentRun => ({
 });
 
 /** Regression: Board refreshes panelRun with a NEW object (same id + status)
- * every 2s poll while a run is active. Solid tracks the props.run getter
- * read itself, so effects depending on props.run re-fire per refresh — the
- * reset effect must key off a memoized id VALUE, not the object reference,
- * or it wipes the stream back to the "No output yet" fallback every poll
+ * repeatedly while a run is active. Solid tracks the props.run getter read
+ * itself, so effects depending on props.run re-fire per refresh — the reset
+ * effect must key off a memoized id VALUE, not the object reference, or it
+ * wipes the stream back to the "No output yet" fallback every refresh
  * (the blink: empty ↔ session). */
 test("AgentRunPanel: same-id refresh must not wipe the stream", async () => {
   resetDom();
@@ -54,7 +54,10 @@ test("AgentRunPanel: same-id refresh must not wipe the stream", async () => {
 
   await waitFor(
     () => {
-      if (batchNo < 2) throw new Error(`expected batch 2, got ${batchNo}`);
+      if (batchNo < 1) throw new Error(`expected batch 1, got ${batchNo}`);
+      if (!document.querySelector(".agent-system")) {
+        throw new Error("session message not rendered");
+      }
     },
     { timeout: 4000 },
   );

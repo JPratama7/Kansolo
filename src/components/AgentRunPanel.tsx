@@ -13,24 +13,19 @@ import { DiffView } from "@git-diff-view/solid";
 import { highlighter } from "../vendor/git-diff-lowlight.mjs";
 import "@git-diff-view/solid/styles/diff-view.css";
 import { toaster } from "./ui/toaster.ts";
-import type { AgentRun, DiffResult, MergeResult, RunUpdate } from "../db.ts";
+import type { AgentRun, AcpUpdateEvent, DiffResult, MergeResult, RunUpdate } from "../types.ts";
+import { safeListen } from "../event.ts";
 import {
   acpCancelRun,
   acpDiffMain,
   acpErrorMessage,
   acpListUpdates,
   acpMerge,
-  acpPermissionTimeoutMs,
   acpRemoveWorktree,
   acpSendFollowup,
   getAllSettings,
   setSetting,
 } from "../db.ts";
-import {
-  dequeuePermission,
-  enqueuePermission,
-  permissionHeadSignal,
-} from "./PermissionDialog.tsx";
 
 export interface AgentRunPanelProps {
   open: boolean;
@@ -91,7 +86,7 @@ function updateToThread(u: RunUpdate): ThreadMsg | null {
   }
 }
 
-const POLL_INTERVAL_MS = 1000;
+
 
 /** Parse raw unified diff text into hunk strings for DiffView.
  * Each hunk starts with `@@` and includes all lines until the next `@@`
@@ -147,11 +142,8 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
   let panelEl: HTMLDivElement | undefined;
   let resizeState: { x: number; y: number; w: number; h: number } | null = null;
 
-  let pollTimer: ReturnType<typeof setInterval> | undefined;
   let updatesEl: HTMLDivElement | undefined;
-  // In-flight guard: prevents overlapping pollUpdates calls from
-  // double-appending the same updates when an interval fires before the
-  // previous fetch resolves.
+  // In-flight guard: prevents overlapping loadUpdates calls.
   let polling = false;
 
   // Mirror props.run identity/active into stable signals. Setting a signal
@@ -239,62 +231,69 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
     ),
   );
 
-  // Load updates once when the panel opens; keep polling while the run is
-  // active (pending/running). Depends on the stable hasActive/runId signals,
-  // not the whole run object.
+  // Load buffered/persisted updates and subscribe to push events when the
+  // panel opens. Events are filtered to the current run_id.
   createEffect(() => {
     const id = runId();
     const open = props.open;
     if (!open || !id) return;
-    // Always load whatever is already buffered/persisted for this run.
-    void pollUpdates(id);
-    if (!hasActive()) return;
-    pollTimer = setInterval(() => void pollUpdates(id), POLL_INTERVAL_MS);
-    onCleanup(() => clearInterval(pollTimer));
+
+    void loadUpdates(id);
+
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    safeListen<AcpUpdateEvent>("acp:update", (event) => {
+      if (cancelled) return;
+      if (event.payload.runId !== id) return;
+      applyUpdates([event.payload.update]);
+    }).then((fn) => {
+      if (cancelled) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+    });
+
+    onCleanup(() => {
+      cancelled = true;
+      unlisten?.();
+    });
   });
 
-  async function pollUpdates(runId: string) {
+  async function loadUpdates(runId: string) {
     if (polling) return;
     polling = true;
     try {
       const newUpdates = await acpListUpdates(runId, cursor());
+      if (!Array.isArray(newUpdates)) return;
       if (newUpdates.length > 0) {
-        const msgs = newUpdates
-          .map(updateToThread)
-          .filter((m): m is ThreadMsg => m !== null);
-        setUpdates((prev) => [...prev, ...msgs]);
-        setCursor((c) => c + newUpdates.length);
-        // Auto-scroll to bottom.
-        if (updatesEl) updatesEl.scrollTop = updatesEl.scrollHeight;
-        // Forward permission requests to the global FIFO queue. The single
-        // PermissionDialog (rendered at the App boundary) mediates the head.
-        for (const u of newUpdates) {
-          if (u.type === "permissionRequest") {
-            const timeoutMs = u.timeoutMs ?? (await acpPermissionTimeoutMs());
-            enqueuePermission({
-              runId,
-              requestId: u.requestId,
-              description: u.description,
-              timeoutMs,
-            });
-          } else if (u.type === "permissionTimeout") {
-            const head = permissionHeadSignal();
-            if (head) dequeuePermission(head.requestId);
-          } else if (u.type === "waitingForInput") {
-            setWaitingForInput(true);
-          } else if (u.type === "completed" || u.type === "failed" || u.type === "cancelled") {
-            setWaitingForInput(false);
-          }
-        }
+        applyUpdates(newUpdates);
       } else if (updates().length === 0 && isTerminal() && props.run?.output) {
         // Buffer gone for a terminal run; show the persisted ACP output.
         setUpdates([{ kind: "assistant", text: props.run.output }]);
         setCursor(1);
       }
     } catch {
-      // Non-fatal — will retry on next poll.
+      // Non-fatal — event stream covers live updates.
     } finally {
       polling = false;
+    }
+  }
+
+  function applyUpdates(newUpdates: RunUpdate[]) {
+    const msgs = newUpdates
+      .map(updateToThread)
+      .filter((m): m is ThreadMsg => m !== null);
+    setUpdates((prev) => [...prev, ...msgs]);
+    setCursor((c) => c + newUpdates.length);
+    // Auto-scroll to bottom.
+    if (updatesEl) updatesEl.scrollTop = updatesEl.scrollHeight;
+    for (const u of newUpdates) {
+      if (u.type === "waitingForInput") {
+        setWaitingForInput(true);
+      } else if (u.type === "completed" || u.type === "failed" || u.type === "cancelled") {
+        setWaitingForInput(false);
+      }
     }
   }
 
