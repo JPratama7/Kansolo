@@ -99,7 +99,7 @@ pub struct ExternalSnapshot {
     pub synced_at: String,
 }
 
-/// Re-export StatusMapping from the mapping module so callers that import
+/// Re-export `StatusMapping` from the mapping module so callers that import
 /// `db::StatusMapping` keep working.
 pub use crate::mapping::StatusMapping;
 
@@ -170,8 +170,8 @@ pub fn save_snapshot_inner(conn: &Connection, snap: &ExternalSnapshot) -> Result
     Ok(())
 }
 
-/// A user-registered external source instance (Jira project, GitHub repo,
-/// etc.) with its config and status-to-column mapping.
+/// External source instance (Jira, GitHub, etc.) with its config and
+/// status-to-column mapping.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceInstance {
@@ -184,7 +184,7 @@ pub struct SourceInstance {
     pub created_at: String,
 }
 
-/// A user-registered file/tree source for card creation.
+/// User-registered file/tree source for card creation.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TreeSource {
@@ -451,10 +451,10 @@ mod column_validation_tests {
 
     #[test]
     fn max_position_rejects_hostile_column_string() {
-        // A pre-fix build interpolated `column` into the SQL, so this string
-        // would have been an injection vector. Post-fix it is bound as a plain
-        // parameter value AND rejected up-front by validate_column, so the
-        // cards table is untouched and we get the friendly error.
+        // Pre-fix, `column` was interpolated into the SQL, so this
+        // string was an injection vector. Now it is bound as a plain parameter
+        // and rejected up-front by validate_column, leaving the cards table
+        // untouched and returning a friendly error.
         let conn = test_db();
         let hostile = r#"backlog"; DROP TABLE cards; --"#;
         let err = max_position(&conn, hostile).unwrap_err();
@@ -737,7 +737,7 @@ mod migration_tests {
             .unwrap();
         assert_eq!(card4_ts, None, "card4 should remain unlinked");
 
-        // The cards table no longer has a repo_path column.
+        // `cards` table dropped its `repo_path` column.
         let mut stmt = conn.prepare("PRAGMA table_info(cards)").unwrap();
         let cols: Vec<String> = stmt
             .query_map([], |r| r.get::<_, String>(1))

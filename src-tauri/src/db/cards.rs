@@ -175,7 +175,7 @@ pub async fn update_card(
 
 /// Move a card to a new column/position. Always bumps updated_at. When
 /// `position` is `None`, the card lands at the end of the target column
-/// (max existing position + 1) — used by drag-drop, which always appends.
+/// (max existing position + 1) — drag-drop always appends.
 #[tauri::command]
 pub async fn move_card(
     app: AppHandle,
