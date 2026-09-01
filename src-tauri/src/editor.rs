@@ -9,7 +9,7 @@ use crate::read_setting;
 /// `{path}` placeholder; when absent, the path is appended as the last
 /// argument. Examples: `code`, `code {path}`, `subl {path}`, `vim {path}`.
 ///
-/// The command is tokenized on whitespace and spawned directly (no `sh -c`)
+/// Tokenize the command on whitespace and spawn it directly (no `sh -c`),
 /// so shell metacharacters (`;`, `|`, `$()`, backticks) in the command string
 /// are passed literally to the editor and never interpreted. `Command::new`
 /// resolves the program via `PATH` on Unix, so the `code` CLI wrapper works
@@ -87,9 +87,9 @@ mod tests {
     #[test]
     fn shell_metacharacters_passed_literally_not_interpreted() {
         // ponytail: no sh -c, so `;` is a literal arg to the editor, not a
-        // command separator. The whole string is one token (no whitespace),
-        // so it becomes the program name — which will simply fail to spawn
-        // with "no such file", not execute `rm -rf ~`.
+        // command separator. The whole string is one token (no whitespace), so
+        // it becomes the program name — which simply fails to spawn with
+        // "no such file" rather than executing `rm -rf ~`.
         let (prog, args) = parse_editor_command("code; rm -rf ~", "/repo");
         assert_eq!(prog, "code;");
         assert_eq!(
