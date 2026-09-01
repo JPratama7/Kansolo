@@ -21,7 +21,7 @@ export interface KanbanCard {
   sourceRef?: string;
   sourceStatus?: string;
   treeSourceId?: string;
-  /** Owning source instance id (FK → sources.id). Null for local cards. */
+  /** Owning source instance id (FK → sources.id); null for local cards. */
   sourceInstanceId?: string;
   createdAt: string;
   updatedAt: string;
@@ -29,7 +29,7 @@ export interface KanbanCard {
 
 export type StatusMapping = Record<"backlog" | "ongoing" | "done", string[]>;
 
-/** A registered git tree source folder, selectable from the card edit dropdown. */
+/** Git tree source folder, selectable from the card edit dropdown. */
 export interface TreeSource {
   id: string;
   label: string;
@@ -38,7 +38,7 @@ export interface TreeSource {
   editorCommand?: string;
 }
 
-/** A registered external source instance (Jira project, GitHub repo, etc.). */
+/** External source instance (Jira project, GitHub repo, etc.). */
 export interface SourceInstance {
   id: string;
   sourceType: string;
@@ -49,20 +49,20 @@ export interface SourceInstance {
   createdAt: string;
 }
 
-/** Metadata describing a pluggable source type (e.g. jira, github). */
+/** Pluggable source type metadata (e.g. jira, github). */
 export interface SourceTypeMeta {
   source_type: string;
   label: string;
 }
 
-/** One field where local and remote both diverged from the snapshot. */
+/** Field where local and remote both diverged from the snapshot. */
 interface FieldConflict {
   field: string;
   local: string;
   remote: string;
 }
 
-/** A card whose local and remote state both diverged from the snapshot. */
+/** Card whose local and remote state both diverged from the snapshot. */
 export interface SyncConflict {
   sourceRef: string;
   card: KanbanCard;
@@ -70,7 +70,7 @@ export interface SyncConflict {
   remote: KanbanCard;
 }
 
-/** Outcome of a sync run against one source instance. */
+/** Sync run result against one source instance. */
 export interface SyncResult {
   conflicts: SyncConflict[];
   unmappedStatuses: string[];
@@ -89,7 +89,7 @@ export interface McpStatus {
   port: number | null;
 }
 
-/** A registered agent (built-in or custom) that can run against a card. */
+/** Agent (built-in or custom) that can run against a card. */
 export interface Agent {
   name: string;
   command: string;
@@ -100,7 +100,7 @@ export interface Agent {
   createdAt: string;
 }
 
-/** A run of an agent against a card, tracked in the `agent_runs` table. */
+/** Agent run against a card, tracked in the `agent_runs` table. */
 export interface AgentRun {
   id: string;
   cardId: string;
@@ -118,14 +118,14 @@ export interface AgentRun {
   finishedAt: string | null;
 }
 
-/** Metadata for a skill, parsed from `SKILL.md` frontmatter. */
+/** Skill metadata, parsed from `SKILL.md` frontmatter. */
 export interface SkillManifest {
   name: string;
   description: string;
   path: string;
 }
 
-/** Updates emitted by a run, streamed to the GUI via Tauri events. */
+/** Run updates, streamed to the GUI via Tauri events. */
 export type RunUpdate =
   | { type: "sessionUpdate"; text: string }
   | { type: "sessionId"; sessionId: string }
@@ -152,13 +152,13 @@ export interface AcpActiveRunsChangedEvent {
   runs: AgentRun[];
 }
 
-/** Result of a diff request between agent branch and main. */
+/** Diff between agent branch and main. */
 export interface DiffResult {
   text: string;
   truncated: boolean;
 }
 
-/** Result of merging an agent branch back into main. */
+/** Merge of an agent branch back into main. */
 export interface MergeResult {
   success: boolean;
   conflicts: string[];
