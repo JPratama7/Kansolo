@@ -139,7 +139,7 @@ test("App.handleSync: pauses on conflict, resumes after resolve with captured sy
     baseElement.querySelector('[data-testid="apply-merge"]') as HTMLElement,
   );
 
-  // After resolve, resolve_conflicts runs for s1, then s2 is synced, and
+  // Post-resolve, resolve_conflicts runs for s1, then s2 is synced, and
   // last_synced_at is set to 't1' (the conflicting source's syncedAt,
   // captured when the loop paused — not a fresh now()).
   await waitFor(() => {

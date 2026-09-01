@@ -63,8 +63,8 @@ test("AgentRunPanel: switching runs resets updates/cursor/diff/mergeResult", asy
     if (queue.length !== 0) throw new Error("initial poll pending");
   });
 
-  // Switch to a different run id — reset effect should fire and the panel
-  // should re-render cleanly with the new run identity (no crash, no stale
+  // Switch to a different run id — reset effect fires and the panel
+  // re-renders cleanly with the new run identity (no crash, no stale
   // updates from r1 leaking into r2's stream).
   setRun(baseRun("r2", "running"));
   await waitFor(() => {
