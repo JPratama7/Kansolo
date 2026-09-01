@@ -53,8 +53,8 @@ const PRIORITY_PILL: Record<Priority, string> = {
 /**
  * Inner form, mounted fresh per edited card via `<Show keyed>`. Owns the
  * editable field signals so they reset cleanly when the Board-level singleton
- * switches cards. Reports dirty/preview state upward so the Dialog.Root (which
- * lives in the parent) can guard Escape.
+ * switches cards. Reports dirty/preview state upward so the Dialog.Root
+ * (which lives in the parent) can guard Escape.
  */
 function EditModalForm(props: EditModalFormProps) {
   const [title, setTitle] = createSignal(props.card.title);
@@ -142,16 +142,20 @@ function EditModalForm(props: EditModalFormProps) {
           </Dialog.CloseTrigger>
         </div>
 
-        <div class="flex items-center justify-between gap-2 mb-3">
+        <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
           <div class="flex items-center gap-1.5 min-w-0">
-            <span class={`priority-pill ${PRIORITY_PILL[props.card.priority]}`}>
+            <span
+              class={`priority-pill shrink-0 ${
+                PRIORITY_PILL[props.card.priority]
+              }`}
+            >
               {props.card.priority}
             </span>
             <Show when={props.card.sourceRef}>
-              <span class="metadata-chip">{props.card.sourceRef}</span>
+              <span class="metadata-chip shrink-0">{props.card.sourceRef}</span>
             </Show>
             <Show when={preview() && treeSourceLabel()}>
-              <span class="metadata-chip">{treeSourceLabel()}</span>
+              <span class="metadata-chip truncate">{treeSourceLabel()}</span>
             </Show>
           </div>
           <Tabs.Root
@@ -319,8 +323,8 @@ export default function EditModal(props: EditModalProps) {
     readColumnRect();
   });
 
-  // When the modal closes (e.g. via Save), dismiss any lingering
-  // confirmation toast so it doesn't outlive the editing session.
+  // Dismiss any lingering confirmation toast when the modal closes (e.g. via
+  // Save) so it doesn't outlive the editing session.
   createEffect((prevOpen: boolean | undefined) => {
     const open = props.open;
     if (prevOpen && !open) {

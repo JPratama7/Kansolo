@@ -38,8 +38,8 @@ const COL_RULE: Record<ColumnId, string> = {
   done: "border-col-done",
 };
 
-/** Number of skeleton placeholders shown while a column is loading. Enough
- * to signal "cards are coming" without filling the column with noise. */
+/** Skeleton count shown while a column loads. Enough to signal "cards are
+ * coming" without filling the column with noise. */
 const SKELETON_COUNT = 3;
 
 export default function Column(props: ColumnProps) {
@@ -183,9 +183,9 @@ export default function Column(props: ColumnProps) {
   );
 }
 
-/** Placeholder card shown while a column's cards are loading. Mirrors the
- * real card silhouette (priority strip + title + description + footer) so
- * the layout doesn't shift when real cards arrive. The shimmer is a single
+/** Placeholder card shown while a column's cards load. Mirrors the real
+ * card silhouette (priority strip + title + description + footer) so the
+ * layout doesn't shift when real cards arrive. The shimmer is a single
  * quiet ambient cue; reduced-motion users see a static block. */
 function CardSkeleton() {
   return (
