@@ -4,9 +4,9 @@
 //! menu. The tray is built once in `setup` and lives for the app's lifetime.
 
 use tauri::{
-    AppHandle, Manager, Runtime,
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    AppHandle, Manager, Runtime,
 };
 
 /// Tooltip shown when hovering the tray icon.
@@ -53,7 +53,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-/// Show the main window and focus it.
+/// Bring the main window to the foreground.
 fn show_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
@@ -61,14 +61,14 @@ fn show_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Hide the main window (keeps the app running in the tray).
+/// Hide the main window while the app keeps running in the tray.
 fn hide_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.hide();
     }
 }
 
-/// Toggle the main window visibility.
+/// Toggle main window visibility.
 fn toggle_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(win) = app.get_webview_window("main") {
         if win.is_visible().unwrap_or(false) {
@@ -80,10 +80,8 @@ fn toggle_window<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
-/// Quit the app: cancel all active agent runs (cooperative SDK shutdown) and
-/// mark their rows failed so card locks release, then exit. Best-effort —
-/// shutdown is bounded by `RunCore::shutdown`'s per-run 5s timeout, and DB
-/// errors are logged but never block exit.
+/// Quit the app: cancel active runs so card locks release, then exit.
+/// Best-effort — shutdown is bounded by a 5s timeout per run.
 fn quit_app<R: Runtime>(app: &AppHandle<R>) {
     let handle = app.clone();
     tauri::async_runtime::spawn(async move {

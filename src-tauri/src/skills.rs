@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use serde::Serialize;
+use std::path::PathBuf;
 
 /// Metadata for a skill, parsed from `SKILL.md` frontmatter.
 #[derive(Debug, Clone, Serialize)]
@@ -24,8 +24,8 @@ fn skills_dir() -> PathBuf {
     }
 }
 
-/// Parse YAML-like frontmatter (hand-rolled, no serde_yaml dep).
-/// Returns (name, description, body_without_frontmatter).
+/// Parse YAML-like frontmatter from a SKILL.md body.
+/// Returns `(name, description, body_without_frontmatter)`.
 fn parse_frontmatter(content: &str) -> (Option<String>, Option<String>, String) {
     let lines: Vec<&str> = content.lines().collect();
     if lines.is_empty() || lines[0].trim() != "---" {
@@ -68,17 +68,19 @@ pub fn list_skills() -> Vec<SkillManifest> {
     let mut skills = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() { continue; }
+        if !path.is_dir() {
+            continue;
+        }
         let skill_file = path.join("SKILL.md");
-        if !skill_file.exists() { continue; }
+        if !skill_file.exists() {
+            continue;
+        }
         let content = match std::fs::read_to_string(&skill_file) {
             Ok(c) => c,
             Err(_) => continue,
         };
         let (name, desc, _body) = parse_frontmatter(&content);
-        let name = name.unwrap_or_else(|| {
-            entry.file_name().to_string_lossy().to_string()
-        });
+        let name = name.unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
         skills.push(SkillManifest {
             name,
             description: desc.unwrap_or_default(),
@@ -134,16 +136,21 @@ mod tests {
     fn with_skills_dir() -> TestGuard {
         let guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("ACP_SKILLS_DIR", "/nonexistent/path/xyz");
-        TestGuard { _guard: guard, dir: None }
+        TestGuard {
+            _guard: guard,
+            dir: None,
+        }
     }
 
     fn with_temp_skills_dir() -> (TestGuard, PathBuf) {
         let guard = ENV_LOCK.lock().unwrap();
-        let dir = std::env::temp_dir()
-            .join(format!("tasker-skills-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("tasker-skills-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("ACP_SKILLS_DIR", dir.to_string_lossy().to_string());
-        let g = TestGuard { _guard: guard, dir: Some(dir.clone()) };
+        let g = TestGuard {
+            _guard: guard,
+            dir: Some(dir.clone()),
+        };
         (g, dir)
     }
 
@@ -165,7 +172,11 @@ mod tests {
         let (_g, dir) = with_temp_skills_dir();
         let skill_dir = dir.join("tdd");
         std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(skill_dir.join("SKILL.md"), "---\nname: tdd\ndescription: Test-driven development\n---\n# TDD\nWrite tests first.").unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: tdd\ndescription: Test-driven development\n---\n# TDD\nWrite tests first.",
+        )
+        .unwrap();
         let skills = list_skills();
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].name, "tdd");
@@ -180,7 +191,11 @@ mod tests {
         let (_g, dir) = with_temp_skills_dir();
         let skill_dir = dir.join("broken");
         std::fs::create_dir_all(&skill_dir).unwrap();
-        std::fs::write(skill_dir.join("SKILL.md"), "---\nname: broken\nno closing frontmatter\nbody text").unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: broken\nno closing frontmatter\nbody text",
+        )
+        .unwrap();
         let content = load_skill_content("broken").unwrap();
         assert!(content.contains("---"));
         assert!(content.contains("no closing"));

@@ -27,19 +27,34 @@ pub struct AcpError {
 
 impl AcpError {
     pub fn internal(msg: impl ToString) -> Self {
-        Self { code: AcpErrorCode::Internal, message: msg.to_string() }
+        Self {
+            code: AcpErrorCode::Internal,
+            message: msg.to_string(),
+        }
     }
     pub fn not_found(msg: impl ToString) -> Self {
-        Self { code: AcpErrorCode::NotFound, message: msg.to_string() }
+        Self {
+            code: AcpErrorCode::NotFound,
+            message: msg.to_string(),
+        }
     }
     pub fn locked(msg: impl ToString) -> Self {
-        Self { code: AcpErrorCode::Locked, message: msg.to_string() }
+        Self {
+            code: AcpErrorCode::Locked,
+            message: msg.to_string(),
+        }
     }
     pub fn validation(msg: impl ToString) -> Self {
-        Self { code: AcpErrorCode::Validation, message: msg.to_string() }
+        Self {
+            code: AcpErrorCode::Validation,
+            message: msg.to_string(),
+        }
     }
     pub fn conflict(msg: impl ToString) -> Self {
-        Self { code: AcpErrorCode::Conflict, message: msg.to_string() }
+        Self {
+            code: AcpErrorCode::Conflict,
+            message: msg.to_string(),
+        }
     }
     /// Delete blocked by existing runs. `name` is the agent name; the
     /// caller should suggest `delete_runs=true` to cascade.
@@ -62,8 +77,8 @@ impl std::fmt::Display for AcpError {
 
 impl std::error::Error for AcpError {}
 
-/// Allows `?` to convert `Result<T, String>` (from open_db, etc.) into
-/// `Result<T, AcpError>` automatically.
+/// Convert `Result<T, String>` errors from DB and utility calls into
+/// `Result<T, AcpError>` so callers can use `?` uniformly.
 impl From<String> for AcpError {
     fn from(s: String) -> Self {
         AcpError::internal(s)
@@ -95,9 +110,15 @@ mod tests {
             (AcpErrorCode::Conflict, "conflict"),
             (AcpErrorCode::AgentHasRuns, "agentHasRuns"),
         ] {
-            let err = AcpError { code: code.clone(), message: "x".into() };
+            let err = AcpError {
+                code: code.clone(),
+                message: "x".into(),
+            };
             let json = serde_json::to_string(&err).unwrap();
-            assert!(json.contains(&format!("\"code\":\"{expected}\"")), "got: {json}");
+            assert!(
+                json.contains(&format!("\"code\":\"{expected}\"")),
+                "got: {json}"
+            );
         }
     }
 }
