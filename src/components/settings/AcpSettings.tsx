@@ -4,9 +4,9 @@ import { getAllSettings, setSetting, invalidatePermissionTimeoutCache } from "..
 const INPUT =
   "w-full text-sm rounded px-2 py-1.5 bg-base text-ink placeholder:text-ink-secondary border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent";
 
-/** Settings section for ACP configuration: default agent, auto-cleanup,
- * skills directory, permission timeout, prune-orphans. Stored in the
- * existing settings KV table. */
+/** ACP settings section: default agent, auto-cleanup, skills directory,
+ * permission timeout, prune-orphans. Stored in the existing settings KV
+ * table. */
 export default function AcpSettings() {
   const [defaultAgent, setDefaultAgent] = createSignal("claude-code");
   const [autoCleanup, setAutoCleanup] = createSignal(true);
@@ -17,7 +17,7 @@ export default function AcpSettings() {
   let savedTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Load settings on mount — values come from getAllSettings in parent.
-  // This component receives initial values via props-free signal init.
+  // Component receives initial values via props-free signal init.
   onMount(() => {
     void (async () => {
       const s = await getAllSettings();
