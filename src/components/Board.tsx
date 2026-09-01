@@ -51,7 +51,7 @@ import SkillPicker from "./SkillPicker.tsx";
 
 let reloadBoard: (() => Promise<void>) | null = null;
 
-/** Re-seed the board from the database. Used by App, e.g. after a sync.
+/** Re-seed the board from the database. Called by App, e.g. after a sync.
  * Triggers each column to re-fetch with a visible loading state, and
  * resolves only once every column fetch has settled. */
 export function reload(): Promise<void> {
@@ -135,8 +135,8 @@ export default function Board() {
     ongoing: true,
     done: true,
   });
-  // Singleton EditModal state: the card currently being edited, or null when
-  // the modal is closed. Lifted out of Card so only one Dialog.Root exists.
+  // Singleton EditModal state: the card currently being edited, or null
+  // when the modal is closed. Lifted out of Card so only one Dialog.Root exists.
   const [currentlyEditingCard, setCurrentlyEditingCard] = createSignal<
     KanbanCard | null
   >(null);
@@ -150,7 +150,7 @@ export default function Board() {
   const [pendingSwitchToastId, setPendingSwitchToastId] = createSignal<
     string | null
   >(null);
-  // Context menu state is hoisted to Board so only one menu is open at a time.
+  // Context menu state hoisted to Board so only one menu is open at a time.
   const [currentlyMenuingCard, setCurrentlyMenuingCard] = createSignal<
     KanbanCard | null
   >(null);
@@ -182,8 +182,8 @@ export default function Board() {
     const map: Record<string, AgentRun> = {};
     for (const r of runs) map[r.cardId] = r;
     setActiveRuns(map);
-    // If the panel is open and the run is still active, refresh panelRun so
-    // status/terminal fields stay live without a separate fetch.
+    // Refresh panelRun while the panel is open and the run is still active,
+    // so status/terminal fields stay live without a separate fetch.
     if (panelOpen()) {
       const pr = panelRun();
       if (pr) {
@@ -319,9 +319,9 @@ export default function Board() {
       }
     },
     onPointerDownOutside: (e) => {
-      // When the user right-clicks on a card while the menu is open,
-      // don't close the menu — the card's onContextMenu handler will
-      // update the anchor point and we reposition via the effect below.
+      // Right-click on a card while the menu is open: don't close the menu.
+      // Card's onContextMenu handler updates the anchor point; we
+      // reposition via the effect below.
       if (e.detail.contextmenu) {
         e.preventDefault();
       }
@@ -341,7 +341,7 @@ export default function Board() {
     // machine's CONTROLLED.OPEN transition handles positioning. On a
     // subsequent open (second right-click while menu is already open),
     // the machine stays in "open" state and doesn't reposition — so we
-    // explicitly call reposition. Use setTimeout(0) to defer past the
+    // explicitly call reposition. setTimeout(0) defers past the
     // machine's own open-transition reposition (which would overwrite
     // our position) and past any pending CLOSE microtasks from
     // pointerdown-outside.

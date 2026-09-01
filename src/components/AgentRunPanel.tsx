@@ -57,9 +57,9 @@ const STATUS_DOT: Record<string, string> = {
   cancelled: "muted",
 };
 
-/** A single rendered entry in the chat thread. The raw RunUpdate union is
- * mapped to this display-only shape so the JSX switch stays flat and the
- * stream can also carry locally-sent user messages. */
+/** One rendered entry in the chat thread. The raw RunUpdate union maps
+ * to this display-only shape so the JSX switch stays flat and the stream
+ * can also carry locally-sent user messages. */
 type ThreadMsg =
   | { kind: "assistant"; text: string }
   | { kind: "user"; text: string }
@@ -98,8 +98,7 @@ function updateToThread(u: RunUpdate): ThreadMsg | null {
 }
 
 /** Parse raw unified diff text into hunk strings for DiffView.
- * Each hunk starts with `@@` and includes all lines until the next `@@`
- * or end of text. */
+ * Each hunk starts with `@@` and runs until the next `@@` or end of text. */
 function parseHunks(diffText: string): string[] {
   const lines = diffText.split("\n");
   const hunks: string[] = [];
@@ -131,9 +130,9 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
   const [followupText, setFollowupText] = createSignal("");
   const [sendingFollowup, setSendingFollowup] = createSignal(false);
   const [resuming, setResuming] = createSignal(false);
-  // Permission requests are pushed to the module-level FIFO queue in
-  // PermissionDialog.tsx; a single global dialog renders the queue head.
-  // The panel keeps no local permission state.
+  // Permission requests go to the module-level FIFO queue in
+  // PermissionDialog.tsx; a single global dialog renders the queue head. The
+  // panel keeps no local state.
 
   // Derived run identity + active flag. props.run is a fresh object on every
   // panelRun refresh (Board polls every 2s), and Solid tracks the props
