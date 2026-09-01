@@ -1,10 +1,6 @@
 //! Jira Cloud REST API v3 `SourceProvider` implementation.
 //!
-//! Moves all Jira-specific logic (HTTP, ADF→Markdown parsing, project
-//! discovery) out of the legacy `crate::jira` module and behind the
-//! [`SourceProvider`](super::SourceProvider) plugin seam, and ports the
-//! `buildJql`/`quoteJql` pure functions from `src/jql.ts` so the JQL builder
-//! is owned by the same module that runs the query.
+//! Handles HTTP, ADF→Markdown parsing, project discovery, and JQL building.
 
 use base64::Engine as _;
 use serde::Deserialize;
@@ -30,6 +26,12 @@ pub struct JqlParts {
     pub order_by: String,
 }
 
+/// Allowed values for `updated_within` — anything else is rejected to
+/// prevent JQL injection via raw string interpolation.
+const ALLOWED_UPDATED_WITHIN: &[&str] = &["any", "7d", "30d", "90d"];
+/// Allowed values for `order_by`.
+const ALLOWED_ORDER_BY: &[&str] = &["updated", "priority", "created"];
+
 /// Quote a JQL string literal: wrap in double quotes, escape inner quotes
 /// and backslashes. Empty string returns `""`. Port of `quoteJql` in
 /// `src/jql.ts`.
@@ -42,6 +44,12 @@ fn quote_jql(value: &str) -> String {
 /// clauses apply. Clauses are joined with `AND`; `ORDER BY <field> DESC` is
 /// appended last. Port of `buildJql` in `src/jql.ts` — every branch matches.
 pub fn build_jql(parts: &JqlParts) -> String {
+    if !ALLOWED_UPDATED_WITHIN.contains(&parts.updated_within.as_str()) {
+        return String::new();
+    }
+    if !ALLOWED_ORDER_BY.contains(&parts.order_by.as_str()) {
+        return String::new();
+    }
     let mut clauses: Vec<String> = Vec::new();
 
     let project = parts.project.trim();
@@ -69,7 +77,11 @@ pub fn build_jql(parts: &JqlParts) -> String {
             .filter(|s| !s.is_empty())
             .collect();
         if !statuses.is_empty() {
-            let list = statuses.iter().map(|s| quote_jql(s)).collect::<Vec<_>>().join(", ");
+            let list = statuses
+                .iter()
+                .map(|s| quote_jql(s))
+                .collect::<Vec<_>>()
+                .join(", ");
             clauses.push(format!("status IN ({list})"));
         }
     }
@@ -110,7 +122,7 @@ struct Issue {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Fields {
-    summary: String,
+    summary: Option<String>,
     status: Status,
     description: Option<serde_json::Value>,
     priority: Option<Priority>,
@@ -145,7 +157,7 @@ fn parse_search_response(body: &str) -> Result<(Vec<RawCard>, Option<String>), S
             let status_name = issue.fields.status.name.unwrap_or_default();
             RawCard {
                 source_ref: issue.key,
-                title: issue.fields.summary,
+                title: issue.fields.summary.unwrap_or_default(),
                 description,
                 status_name,
                 priority_name: issue.fields.priority.map(|p| p.name).flatten(),
@@ -383,14 +395,7 @@ fn list_to_md(content: Option<&serde_json::Value>, ordered: bool, depth: usize) 
 /// `page_token` is `Some`, appends `&nextPageToken=...` to fetch the next
 /// page of results from Jira Cloud's cursor-paginated search endpoint.
 fn build_search_url(base_url: &str, jql: &str, page_token: Option<&str>) -> String {
-    let trimmed = base_url.trim();
-    // Tolerate users who paste a full URL with a scheme; strip it so we don't
-    // end up with `https://https://host`. http:// is upgraded to https://.
-    let without_scheme = trimmed
-        .strip_prefix("https://")
-        .or_else(|| trimmed.strip_prefix("http://"))
-        .unwrap_or(trimmed);
-    let host = without_scheme.strip_suffix('/').unwrap_or(without_scheme);
+    let host = normalize_host(base_url);
     let encoded_jql = urlencoding::encode(jql);
     let mut url = format!(
         "https://{host}/rest/api/3/search/jql?jql={encoded_jql}&fields=key,summary,status,description,priority&maxResults=100"
@@ -405,13 +410,37 @@ fn build_search_url(base_url: &str, jql: &str, page_token: Option<&str>) -> Stri
 /// Build the `GET /rest/api/3/project` URL. Same host normalization as
 /// [`build_search_url`]; no JQL to encode.
 fn build_projects_url(base_url: &str) -> String {
+    let host = normalize_host(base_url);
+    format!("https://{host}/rest/api/3/project")
+}
+
+/// Strip scheme + trailing slash from `base_url`, returning the bare host.
+/// Upgrades `http://` to `https://` by discarding the scheme entirely.
+fn normalize_host(base_url: &str) -> String {
     let trimmed = base_url.trim();
     let without_scheme = trimmed
         .strip_prefix("https://")
         .or_else(|| trimmed.strip_prefix("http://"))
         .unwrap_or(trimmed);
-    let host = without_scheme.strip_suffix('/').unwrap_or(without_scheme);
-    format!("https://{host}/rest/api/3/project")
+    without_scheme.strip_suffix('/').unwrap_or(without_scheme).to_string()
+}
+
+/// Reject empty hosts and loopback/link-local addresses so credentials
+/// are never sent to `localhost` or `127.x.x.x`. This is a trust boundary:
+/// `base_url` controls where `Authorization: Basic email:token` is sent.
+/// ponytail: could also block 10.x/172.16.x/192.168.x with an IP-range
+/// check; not added because a local single-user app may legitimately sync
+/// against an on-prem Jira at a private IP.
+fn validate_base_url(base_url: &str) -> Result<(), String> {
+    let host = normalize_host(base_url);
+    if host.is_empty() {
+        return Err("Jira base_url host must not be empty".to_string());
+    }
+    let lower = host.to_lowercase();
+    if lower == "localhost" || lower.starts_with("127.") || lower.starts_with("169.254.") {
+        return Err("Jira base_url must not point to localhost or link-local".to_string());
+    }
+    Ok(())
 }
 
 /// Build a `Basic <base64(email:token)>` header value. The token never
@@ -431,10 +460,14 @@ fn config_string(config: &serde_json::Value, field: &str) -> Result<String, Stri
     let value = config
         .get(field)
         .ok_or_else(|| format!("Missing `{field}` in Jira source config"))?;
-    value
+    let s = value
         .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| format!("`{field}` in Jira source config must be a string"))
+        .ok_or_else(|| format!("`{field}` in Jira source config must be a string"))?;
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return Err(format!("`{field}` in Jira source config must not be empty"));
+    }
+    Ok(s.to_string())
 }
 
 /// Fetch one search page and parse it into `(cards, next_page_token)`. The
@@ -493,6 +526,7 @@ impl SourceProvider for JiraSource {
 
     async fn fetch_raw(&self, config: &serde_json::Value) -> Result<Vec<RawCard>, String> {
         let base_url = config_string(config, "base_url")?;
+        validate_base_url(&base_url)?;
         let email = config_string(config, "email")?;
         let token = config_string(config, "token")?;
         let jql_parts = config
@@ -510,7 +544,10 @@ impl SourceProvider for JiraSource {
         }
 
         let authorization = basic_auth_header(&email, &token);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| format!("Failed to build HTTP client: {e}"))?;
 
         // Jira Cloud paginates search via an opaque `nextPageToken` cursor.
         // Loop until a page returns no token, capping at 50 pages so a
@@ -522,8 +559,7 @@ impl SourceProvider for JiraSource {
         let mut page_token: Option<String> = None;
         for _ in 0..MAX_PAGES {
             let url = build_search_url(&base_url, &jql, page_token.as_deref());
-            let (cards, next_token) =
-                fetch_search_page(&client, &url, &authorization).await?;
+            let (cards, next_token) = fetch_search_page(&client, &url, &authorization).await?;
             all_cards.extend(cards);
             match next_token {
                 Some(t) => page_token = Some(t),
@@ -533,18 +569,19 @@ impl SourceProvider for JiraSource {
         Ok(all_cards)
     }
 
-    async fn fetch_options(
-        &self,
-        config: &serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
+    async fn fetch_options(&self, config: &serde_json::Value) -> Result<serde_json::Value, String> {
         let base_url = config_string(config, "base_url")?;
+        validate_base_url(&base_url)?;
         let email = config_string(config, "email")?;
         let token = config_string(config, "token")?;
 
         let url = build_projects_url(&base_url);
         let authorization = basic_auth_header(&email, &token);
 
-        let response = reqwest::Client::new()
+        let response = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| format!("Failed to build HTTP client: {e}"))?
             .get(&url)
             .header(reqwest::header::ACCEPT, "application/json")
             .header(reqwest::header::AUTHORIZATION, authorization)
@@ -572,8 +609,8 @@ impl SourceProvider for JiraSource {
 
         // Pass the raw project array through wrapped in `{ "projects": [...] }`
         // so the frontend's option-fetch contract is uniform across providers.
-        let projects: serde_json::Value =
-            serde_json::from_str(&body).map_err(|e| format!("Failed to parse Jira response: {e}"))?;
+        let projects: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|e| format!("Failed to parse Jira response: {e}"))?;
         Ok(serde_json::json!({ "projects": projects }))
     }
 }
@@ -895,7 +932,10 @@ mod tests {
         );
 
         // Plain-string descriptions (legacy/custom fields) pass through.
-        assert_eq!(adf_to_text(&serde_json::json!("legacy text")), "legacy text");
+        assert_eq!(
+            adf_to_text(&serde_json::json!("legacy text")),
+            "legacy text"
+        );
         // Null → empty.
         assert_eq!(adf_to_text(&serde_json::Value::Null), "");
         // Unknown block type with content still recurses.
