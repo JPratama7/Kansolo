@@ -1,9 +1,14 @@
-export type ColumnId = 'backlog' | 'ongoing' | 'done';
+export type ColumnId = "backlog" | "ongoing" | "done";
 
-/** Ordered low → urgent. Index in `PRIORITIES` reflects severity. */
-export type Priority = 'low' | 'medium' | 'high' | 'urgent';
+/** Priority values; the index in `PRIORITIES` is the severity rank. */
+export type Priority = "low" | "medium" | "high" | "urgent";
 
-export const PRIORITIES: readonly Priority[] = ['low', 'medium', 'high', 'urgent'];
+export const PRIORITIES: readonly Priority[] = [
+  "low",
+  "medium",
+  "high",
+  "urgent",
+];
 
 export interface KanbanCard {
   id: string;
@@ -16,15 +21,13 @@ export interface KanbanCard {
   sourceRef?: string;
   sourceStatus?: string;
   treeSourceId?: string;
-  /** Optional per-card repo path override (mirrors the Rust `repo_path` column). */
-  repoPath?: string;
   /** Owning source instance id (FK → sources.id). Null for local cards. */
   sourceInstanceId?: string;
   createdAt: string;
   updatedAt: string;
 }
 
-export type StatusMapping = Record<'backlog' | 'ongoing' | 'done', string[]>;
+export type StatusMapping = Record<"backlog" | "ongoing" | "done", string[]>;
 
 /** A registered git tree source folder, selectable from the card edit dropdown. */
 export interface TreeSource {
@@ -78,7 +81,7 @@ export interface SyncResult {
 /** Per-card field choices for resolving a batch of sync conflicts. */
 export interface ConflictResolution {
   sourceRef: string;
-  choices: Record<string, 'local' | 'remote'>;
+  choices: Record<string, "local" | "remote">;
 }
 
 export interface McpStatus {
@@ -124,13 +127,19 @@ export interface SkillManifest {
 
 /** Updates emitted by a run, streamed to the GUI via Tauri events. */
 export type RunUpdate =
-  | { type: 'sessionUpdate'; text: string }
-  | { type: 'sessionId'; sessionId: string }
-  | { type: 'completed'; output: string; stopReason: string }
-  | { type: 'failed'; error: string }
-  | { type: 'cancelled' }
-  | { type: 'permissionRequest'; requestId: string; description: string; timeoutMs?: number }
-  | { type: 'permissionTimeout' };
+  | { type: "sessionUpdate"; text: string }
+  | { type: "sessionId"; sessionId: string }
+  | { type: "completed"; output: string; stopReason: string }
+  | { type: "failed"; error: string }
+  | { type: "cancelled" }
+  | {
+    type: "permissionRequest";
+    requestId: string;
+    description: string;
+    timeoutMs?: number;
+  }
+  | { type: "permissionTimeout" }
+  | { type: "waitingForInput"; stopReason: string };
 
 /** Result of a diff request between agent branch and main. */
 export interface DiffResult {

@@ -1,11 +1,12 @@
 // Card CRUD commands — filled in step n2
 
 use super::*;
-use crate::db::{Card, CardRow, open_db, now_iso, max_position};
+use crate::db::{max_position, now_iso, open_db, Card, CardRow};
+use crate::error::AcpError;
 
 /// Map a single row from the `cards` table into a [`CardRow`].
 /// Uses only the generalized `source_ref`/`source_status` columns.
-fn row_to_card_row(row: &rusqlite::Row) -> rusqlite::Result<CardRow> {
+pub(crate) fn row_to_card_row(row: &rusqlite::Row) -> rusqlite::Result<CardRow> {
     Ok(CardRow {
         id: row.get("id")?,
         title: row.get("title")?,
@@ -17,7 +18,6 @@ fn row_to_card_row(row: &rusqlite::Row) -> rusqlite::Result<CardRow> {
         source_ref: row.get("source_ref")?,
         source_status: row.get("source_status")?,
         tree_source_id: row.get("tree_source_id")?,
-        repo_path: row.get("repo_path")?,
         source_instance_id: row.get("source_instance_id")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
@@ -25,7 +25,7 @@ fn row_to_card_row(row: &rusqlite::Row) -> rusqlite::Result<CardRow> {
 }
 
 /// Canonical column list for SELECTs — uses the generalized columns.
-const CARD_COLUMNS: &str = r#"id, title, description, priority, "column", source, position, source_ref, source_status, tree_source_id, repo_path, source_instance_id, created_at, updated_at"#;
+pub(crate) const CARD_COLUMNS: &str = r#"id, title, description, priority, "column", source, position, source_ref, source_status, tree_source_id, source_instance_id, created_at, updated_at"#;
 
 /// SELECT all cards ordered by column then position.
 #[tauri::command]
@@ -71,7 +71,11 @@ pub async fn list_cards_by_column(app: AppHandle, column: String) -> Result<Vec<
 
 /// Create a new local card with a fresh UUID and a position at the end of its column.
 #[tauri::command]
-pub async fn create_local_card(app: AppHandle, title: String, column: String) -> Result<Card, String> {
+pub async fn create_local_card(
+    app: AppHandle,
+    title: String,
+    column: String,
+) -> Result<Card, String> {
     crate::db::validate_column(&column)?;
     let conn = open_db(&app)?;
     let now = now_iso();
@@ -105,7 +109,6 @@ pub async fn create_local_card(app: AppHandle, title: String, column: String) ->
         source_ref: None,
         source_status: None,
         tree_source_id: None,
-        repo_path: None,
         source_instance_id: None,
         created_at: now.clone(),
         updated_at: now,
@@ -139,10 +142,14 @@ pub async fn update_card(
         binds.push(Box::new(v));
     }
     if let Some(v) = priority {
-        sets.push(format!("priority = ?{}", binds.len() + 1));
-        binds.push(Box::new(v));
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            sets.push(format!("priority = ?{}", binds.len() + 1));
+            binds.push(Box::new(v));
+        }
     }
     if let Some(v) = column {
+        crate::db::validate_column(&v)?;
         sets.push(format!(r#""column" = ?{}"#, binds.len() + 1));
         binds.push(Box::new(v));
     }
@@ -168,7 +175,11 @@ pub async fn update_card(
     let id_idx = binds.len() + 1;
     binds.push(Box::new(id));
 
-    let sql = format!("UPDATE cards SET {} WHERE id = ?{}", sets.join(", "), id_idx);
+    let sql = format!(
+        "UPDATE cards SET {} WHERE id = ?{}",
+        sets.join(", "),
+        id_idx
+    );
     let params: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
     conn.execute(&sql, params.as_slice())
         .map_err(|e| e.to_string())?;
@@ -199,10 +210,15 @@ pub async fn move_card(
     Ok(())
 }
 
-/// Delete a single card by id.
+/// Delete a single card by id. Refuses if the card has an active agent run
+/// (pending/running) — `agent_runs.card_id` is `ON DELETE CASCADE`, so
+/// deleting would silently kill an in-progress run.
 #[tauri::command]
 pub async fn delete_card(app: AppHandle, id: String) -> Result<(), String> {
     let conn = open_db(&app)?;
+    if crate::db::agent_runs::is_card_locked(&conn, &id) {
+        return Err(format!("Card '{id}' has an active agent run and cannot be deleted"));
+    }
     conn.execute("DELETE FROM cards WHERE id = ?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -238,6 +254,23 @@ pub fn delete_all_source_cards_inner(
     conn: &mut rusqlite::Connection,
     source_id: &str,
 ) -> Result<(), String> {
+    // Refuse if any card under this source has an active agent run.
+    // agent_runs.card_id is ON DELETE CASCADE — deleting would silently
+    // kill in-progress runs.
+    let locked: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM agent_runs r
+             JOIN cards c ON r.card_id = c.id
+             WHERE c.source_instance_id = ?1 AND r.status IN ('pending', 'running')",
+            rusqlite::params![source_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if locked > 0 {
+        return Err(format!(
+            "Source '{source_id}' has {locked} card(s) with active agent runs; cancel them first"
+        ));
+    }
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     tx.execute(
         "DELETE FROM cards WHERE source_instance_id = ?1",
@@ -290,11 +323,32 @@ pub async fn get_card_by_source_ref(
     get_card_by_source_ref_inner(&conn, &source, &source_ref)
 }
 
+/// Resolve a card's repo path via its `tree_source_id`. Used by the ACP
+/// runner when no explicit `repo_path` is set on the card: looks up the
+/// linked tree source's `path`. Returns `AcpError` so callers can use `?`
+/// alongside other `AcpError` results.
+pub fn resolve_repo_path(conn: &rusqlite::Connection, card: &Card) -> Result<String, AcpError> {
+    let ts_id = card.tree_source_id.as_ref().ok_or_else(|| {
+        AcpError::validation(format!("Card '{}' has no tree_source_id set.", card.id))
+    })?;
+    crate::db::settings::get_tree_source_path(conn, ts_id)?.ok_or_else(|| {
+        AcpError::validation(format!(
+            "Card '{}' links to missing tree_source '{}'.",
+            card.id, ts_id
+        ))
+    })
+}
+
 /// Fetch a card by id. Sync helper used by the ACP runner; returns
 /// `AcpError` so callers can use `?` alongside other `AcpError` results.
-pub fn get_card_by_id(conn: &rusqlite::Connection, id: &str) -> Result<Option<Card>, crate::error::AcpError> {
+pub fn get_card_by_id(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<Option<Card>, crate::error::AcpError> {
     let mut stmt = conn
-        .prepare(&format!("SELECT {CARD_COLUMNS} FROM cards WHERE id = ?1 LIMIT 1"))
+        .prepare(&format!(
+            "SELECT {CARD_COLUMNS} FROM cards WHERE id = ?1 LIMIT 1"
+        ))
         .map_err(crate::error::AcpError::internal)?;
     let mut rows = stmt
         .query(rusqlite::params![id])
@@ -307,83 +361,92 @@ pub fn get_card_by_id(conn: &rusqlite::Connection, id: &str) -> Result<Option<Ca
     }
 }
 
-/// Insert a new externally-sourced card or fully overwrite an existing one
-/// (matched by `(source, source_ref)`). Mirrors src/db.ts upsertCardFromSync
-/// (lines 242-284): preserves the existing id and per-column position when
-/// updating; assigns a fresh end-of-column position when inserting.
-/// Writes only the generalized `source_ref`/`source_status` columns.
+/// Insert or overwrite an externally-sourced card, keyed by `(source, source_ref)`.
+/// Preserves the existing id and per-column position on update; assigns a fresh
+/// end-of-column position on insert. `updated_at` is remote-authoritative so a
+/// sync never back-dates a card.
 ///
-/// `updated_at` is remote-authoritative: on both insert and update it is set
-/// from `card.updated_at` (the upstream snapshot timestamp), never from local
-/// clock time, so a sync never back-dates a card or clobbers the remote's
-/// notion of "last modified" with a local now() stamp.
-///
-/// Inner helper that runs on a borrowed connection (works inside a
-/// `Transaction` via deref coercion) so `sync_source` can do all its
-/// reads/writes on one atomic transaction.
-pub fn upsert_card_from_sync_inner(
+/// Runs on a borrowed connection so `sync_source` can use it inside one transaction.
+pub fn upsert_card_from_sync_inner(conn: &rusqlite::Connection, card: &Card) -> Result<(), String> {
+    let source_ref = card.source_ref.clone().unwrap_or_default();
+    let instance_id = card.source_instance_id.as_deref().unwrap_or(&card.source);
+    if find_existing_card_id(conn, instance_id, &source_ref)?.is_some() {
+        update_synced_card(conn, card, &source_ref)
+    } else {
+        insert_synced_card(conn, card, &source_ref)
+    }
+}
+
+fn find_existing_card_id(
+    conn: &rusqlite::Connection,
+    source_instance_id: &str,
+    source_ref: &str,
+) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT id FROM cards WHERE source_instance_id = ?1 AND source_ref = ?2",
+        rusqlite::params![source_instance_id, source_ref],
+        |row| row.get(0),
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other),
+    })
+    .map_err(|e| e.to_string())
+}
+
+fn update_synced_card(
     conn: &rusqlite::Connection,
     card: &Card,
+    source_ref: &str,
 ) -> Result<(), String> {
-    let source_ref = card.source_ref.clone().unwrap_or_default();
-    let existing: Option<String> = conn
-        .query_row(
-            "SELECT id FROM cards WHERE source = ?1 AND source_ref = ?2",
-            rusqlite::params![card.source, source_ref],
-            |row| row.get(0),
-        )
-        .map(Some)
-        .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(other),
-        })
-        .map_err(|e| e.to_string())?;
+    conn.execute(
+        r#"UPDATE cards SET
+             title = ?1, description = ?2, priority = ?3, source_status = ?4,
+             "column" = ?5, updated_at = ?6, source_instance_id = ?7
+           WHERE source_instance_id = ?8 AND source_ref = ?9"#,
+        rusqlite::params![
+            card.title,
+            card.description,
+            card.priority,
+            card.source_status,
+            card.column,
+            card.updated_at,
+            card.source_instance_id,
+            card.source_instance_id,
+            source_ref,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
 
-    if existing.is_some() {
-        // Preserve id + position; refresh mutable fields from the remote.
-        // source_instance_id is refreshed too so a card created before the
-        // instance-FK migration gets linked on its next sync.
-        conn.execute(
-            r#"UPDATE cards SET
-                 title = ?1, description = ?2, priority = ?3, source_status = ?4,
-                 "column" = ?5, updated_at = ?6, source_instance_id = ?7
-               WHERE source = ?8 AND source_ref = ?9"#,
-            rusqlite::params![
-                card.title,
-                card.description,
-                card.priority,
-                card.source_status,
-                card.column,
-                card.updated_at,
-                card.source_instance_id,
-                card.source,
-                source_ref,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-    } else {
-        let position = max_position(conn, &card.column)? + 1;
-        conn.execute(
-            r#"INSERT INTO cards
-                 (id, title, description, priority, "column", source, position, source_ref, source_status, source_instance_id, created_at, updated_at)
-               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"#,
-            rusqlite::params![
-                card.id,
-                card.title,
-                card.description,
-                card.priority,
-                card.column,
-                card.source,
-                position,
-                source_ref,
-                card.source_status,
-                card.source_instance_id,
-                card.created_at,
-                card.updated_at,
-            ],
-        )
-        .map_err(|e| e.to_string())?;
-    }
+fn insert_synced_card(
+    conn: &rusqlite::Connection,
+    card: &Card,
+    source_ref: &str,
+) -> Result<(), String> {
+    let position = max_position(conn, &card.column)? + 1;
+    conn.execute(
+        r#"INSERT INTO cards
+             (id, title, description, priority, "column", source, position, source_ref, source_status, source_instance_id, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"#,
+        rusqlite::params![
+            card.id,
+            card.title,
+            card.description,
+            card.priority,
+            card.column,
+            card.source,
+            position,
+            source_ref,
+            card.source_status,
+            card.source_instance_id,
+            card.created_at,
+            card.updated_at,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -472,10 +535,34 @@ mod source_instance_tests {
 
         delete_all_source_cards_inner(&mut conn, "src-a").unwrap();
 
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM cards WHERE source_instance_id = 'src-a'"), 0);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM cards WHERE source_instance_id = 'src-b'"), 1);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM external_snapshots WHERE source_instance_id = 'src-a'"), 0);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM external_snapshots WHERE source_instance_id = 'src-b'"), 1);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM cards WHERE source_instance_id = 'src-a'"
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM cards WHERE source_instance_id = 'src-b'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM external_snapshots WHERE source_instance_id = 'src-a'"
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM external_snapshots WHERE source_instance_id = 'src-b'"
+            ),
+            1
+        );
     }
 
     #[test]
@@ -492,8 +579,17 @@ mod source_instance_tests {
 
         delete_all_source_cards_inner(&mut conn, "src-a").unwrap();
 
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM cards WHERE source = 'local'"), 1);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM cards WHERE source_instance_id = 'src-a'"), 0);
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM cards WHERE source = 'local'"),
+            1
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM cards WHERE source_instance_id = 'src-a'"
+            ),
+            0
+        );
     }
 
     #[test]
@@ -504,10 +600,17 @@ mod source_instance_tests {
                VALUES (?1, ?2, 'backlog', 'test', 0, ?3, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
             rusqlite::params!["c-1", "c-1", "no-such-instance"],
         );
-        assert!(result.is_err(), "FK should reject insert with non-existent source_instance_id");
+        assert!(
+            result.is_err(),
+            "FK should reject insert with non-existent source_instance_id"
+        );
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("FOREIGN KEY") || err.contains("foreign key") || err.contains("constraint"),
-            "error should mention FK constraint, got: {err}");
+        assert!(
+            err.contains("FOREIGN KEY")
+                || err.contains("foreign key")
+                || err.contains("constraint"),
+            "error should mention FK constraint, got: {err}"
+        );
     }
 
     #[test]
@@ -518,6 +621,74 @@ mod source_instance_tests {
                VALUES (?1, 'test', 'PROJ-1', 't', '2026-01-01T00:00:00Z')"#,
             rusqlite::params!["no-such-instance"],
         );
-        assert!(result.is_err(), "FK should reject snapshot insert with non-existent source_instance_id");
+        assert!(
+            result.is_err(),
+            "FK should reject snapshot insert with non-existent source_instance_id"
+        );
+    }
+}
+
+#[cfg(test)]
+mod resolve_repo_path_tests {
+    use super::{get_card_by_id, resolve_repo_path};
+    use crate::db::test_db;
+
+    fn insert_tree_source(conn: &rusqlite::Connection, id: &str, path: &str) {
+        conn.execute(
+            "INSERT INTO tree_sources (id, label, path, editor_command, created_at)
+             VALUES (?1, ?2, ?3, NULL, '2026-01-01T00:00:00Z')",
+            rusqlite::params![id, id, path],
+        )
+        .unwrap();
+    }
+
+    fn insert_card(conn: &rusqlite::Connection, id: &str, tree_source_id: Option<&str>) {
+        conn.execute(
+            r#"INSERT INTO cards (id, title, "column", source, position, tree_source_id, created_at, updated_at)
+               VALUES (?1, ?2, 'backlog', 'local', 0, ?3, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
+            rusqlite::params![id, id, tree_source_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn resolve_repo_path_none_tree_source_id() {
+        let conn = test_db();
+        insert_card(&conn, "c-1", None);
+        let card = get_card_by_id(&conn, "c-1").unwrap().unwrap();
+
+        let err = resolve_repo_path(&conn, &card).unwrap_err();
+        assert!(
+            err.to_string().contains("tree_source_id"),
+            "error should mention tree_source_id, got: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_repo_path_missing_tree_source() {
+        let conn = test_db();
+        // Bypass FK to simulate a dangling tree_source_id (the row it
+        // pointed to was deleted after the card was linked).
+        conn.execute("PRAGMA foreign_keys=OFF", []).unwrap();
+        insert_card(&conn, "c-1", Some("nonexistent-ts"));
+        conn.execute("PRAGMA foreign_keys=ON", []).unwrap();
+        let card = get_card_by_id(&conn, "c-1").unwrap().unwrap();
+
+        let err = resolve_repo_path(&conn, &card).unwrap_err();
+        assert!(
+            err.to_string().contains("missing tree_source"),
+            "error should mention missing tree_source, got: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_repo_path_happy_path() {
+        let conn = test_db();
+        insert_tree_source(&conn, "ts-1", "/tmp/myrepo");
+        insert_card(&conn, "c-1", Some("ts-1"));
+        let card = get_card_by_id(&conn, "c-1").unwrap().unwrap();
+
+        let path = resolve_repo_path(&conn, &card).unwrap();
+        assert_eq!(path, "/tmp/myrepo");
     }
 }

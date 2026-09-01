@@ -1,7 +1,7 @@
-use rusqlite::{params, Connection};
-use serde::{Deserialize, Serialize};
 use crate::db::now_iso;
 use crate::error::AcpError;
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 
 /// Raw row from the `agents` table.
 pub struct AgentRow {
@@ -76,15 +76,17 @@ pub fn get_agent(conn: &Connection, name: &str) -> Result<Option<Agent>, AcpErro
         "SELECT name, command, description, built_in, enabled, skills_json, created_at
          FROM agents WHERE name = ?1",
         params![name],
-        |r| Ok(AgentRow {
-            name: r.get(0)?,
-            command: r.get(1)?,
-            description: r.get(2)?,
-            built_in: r.get::<_, i64>(3)? != 0,
-            enabled: r.get::<_, i64>(4)? != 0,
-            skills_json: r.get(5)?,
-            created_at: r.get(6)?,
-        }),
+        |r| {
+            Ok(AgentRow {
+                name: r.get(0)?,
+                command: r.get(1)?,
+                description: r.get(2)?,
+                built_in: r.get::<_, i64>(3)? != 0,
+                enabled: r.get::<_, i64>(4)? != 0,
+                skills_json: r.get(5)?,
+                created_at: r.get(6)?,
+            })
+        },
     );
     match row {
         Ok(r) => Ok(Some(Agent::from(r))),
@@ -98,15 +100,19 @@ pub fn list_agents(conn: &Connection) -> Result<Vec<Agent>, AcpError> {
     let mut stmt = conn
         .prepare("SELECT name, command, description, built_in, enabled, skills_json, created_at FROM agents ORDER BY name ASC")
         .map_err(AcpError::internal)?;
-    let rows = stmt.query_map([], |r| Ok(AgentRow {
-        name: r.get(0)?,
-        command: r.get(1)?,
-        description: r.get(2)?,
-        built_in: r.get::<_, i64>(3)? != 0,
-        enabled: r.get::<_, i64>(4)? != 0,
-        skills_json: r.get(5)?,
-        created_at: r.get(6)?,
-    })).map_err(AcpError::internal)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(AgentRow {
+                name: r.get(0)?,
+                command: r.get(1)?,
+                description: r.get(2)?,
+                built_in: r.get::<_, i64>(3)? != 0,
+                enabled: r.get::<_, i64>(4)? != 0,
+                skills_json: r.get(5)?,
+                created_at: r.get(6)?,
+            })
+        })
+        .map_err(AcpError::internal)?;
     let mut agents = Vec::new();
     for r in rows {
         agents.push(Agent::from(r.map_err(AcpError::internal)?));
@@ -125,7 +131,8 @@ pub fn update_agent(
     conn.execute(
         "UPDATE agents SET command = ?1, description = ?2, skills_json = ?3 WHERE name = ?4",
         params![command, description, serialize_skills(skills), name],
-    ).map_err(AcpError::internal)?;
+    )
+    .map_err(AcpError::internal)?;
     Ok(())
 }
 
@@ -133,8 +140,11 @@ pub fn update_agent(
 /// If `delete_runs` is true, cascades by deleting runs first.
 pub fn delete_agent(conn: &Connection, name: &str, delete_runs: bool) -> Result<(), AcpError> {
     if delete_runs {
-        conn.execute("DELETE FROM agent_runs WHERE agent_name = ?1", params![name])
-            .map_err(AcpError::internal)?;
+        conn.execute(
+            "DELETE FROM agent_runs WHERE agent_name = ?1",
+            params![name],
+        )
+        .map_err(AcpError::internal)?;
     }
     conn.execute("DELETE FROM agents WHERE name = ?1", params![name])
         .map_err(|e| {
@@ -184,10 +194,26 @@ mod tests {
     #[test]
     fn agent_skills_round_trip() {
         let conn = test_db();
-        insert_agent(&conn, "my-agent", "echo hi", "Test agent", false, true, &["tdd".to_string(), "code-review".to_string()]).unwrap();
+        insert_agent(
+            &conn,
+            "my-agent",
+            "echo hi",
+            "Test agent",
+            false,
+            true,
+            &["tdd".to_string(), "code-review".to_string()],
+        )
+        .unwrap();
         let agent = get_agent(&conn, "my-agent").unwrap().unwrap();
         assert_eq!(agent.skills, vec!["tdd", "code-review"]);
-        update_agent(&conn, "my-agent", "echo bye", "Updated", &["tdd".to_string()]).unwrap();
+        update_agent(
+            &conn,
+            "my-agent",
+            "echo bye",
+            "Updated",
+            &["tdd".to_string()],
+        )
+        .unwrap();
         let agent = get_agent(&conn, "my-agent").unwrap().unwrap();
         assert_eq!(agent.skills, vec!["tdd"]);
         assert_eq!(agent.command, "echo bye");
@@ -198,9 +224,22 @@ mod tests {
         let conn = test_db();
         insert_test_card(&conn, "c-1");
         insert_agent(&conn, "my-agent", "echo hi", "Test", false, true, &[]).unwrap();
-        crate::db::agent_runs::insert_run(&conn, "r-1", "c-1", "my-agent", "/tmp/wt", "agent/c-1", "running", &[]).unwrap();
+        crate::db::agent_runs::insert_run(
+            &conn,
+            "r-1",
+            "c-1",
+            "my-agent",
+            "/tmp/wt",
+            "agent/c-1",
+            "running",
+            &[],
+        )
+        .unwrap();
         let result = delete_agent(&conn, "my-agent", false);
-        assert!(result.is_err(), "delete should be restricted while runs exist");
+        assert!(
+            result.is_err(),
+            "delete should be restricted while runs exist"
+        );
         delete_agent(&conn, "my-agent", true).unwrap();
         assert!(get_agent(&conn, "my-agent").unwrap().is_none());
     }
@@ -211,7 +250,16 @@ mod tests {
         upsert_agent(&conn, "my-agent", "echo hi", "Test", false, true, &[]).unwrap();
         let agent = get_agent(&conn, "my-agent").unwrap().unwrap();
         assert_eq!(agent.command, "echo hi");
-        upsert_agent(&conn, "my-agent", "echo bye", "Updated", false, true, &["tdd".to_string()]).unwrap();
+        upsert_agent(
+            &conn,
+            "my-agent",
+            "echo bye",
+            "Updated",
+            false,
+            true,
+            &["tdd".to_string()],
+        )
+        .unwrap();
         let agent = get_agent(&conn, "my-agent").unwrap().unwrap();
         assert_eq!(agent.command, "echo bye");
         assert_eq!(agent.description, "Updated");

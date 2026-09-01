@@ -115,7 +115,10 @@ pub fn registry() -> &'static HashMap<&'static str, Box<dyn SourceProvider>> {
     static REGISTRY: OnceLock<HashMap<&'static str, Box<dyn SourceProvider>>> = OnceLock::new();
     REGISTRY.get_or_init(|| {
         let mut map: HashMap<&'static str, Box<dyn SourceProvider>> = HashMap::new();
-        map.insert("jira", Box::new(jira::JiraSource) as Box<dyn SourceProvider>);
+        map.insert(
+            "jira",
+            Box::new(jira::JiraSource) as Box<dyn SourceProvider>,
+        );
         map
     })
 }
@@ -129,14 +132,12 @@ use std::collections::HashSet;
 use rusqlite::params;
 use tauri::AppHandle;
 
-use crate::db::{get_snapshot_inner, now_iso, open_db, save_snapshot_inner, SourceInstance};
 use crate::db::cards::{
     get_card_by_source_ref_inner, upsert_card_from_sync, upsert_card_from_sync_inner,
 };
 use crate::db::settings::{get_source, get_source_inner, save_snapshot};
-use crate::mapping::{
-    is_status_mapped, resolve_column, resolve_priority, StatusMapping,
-};
+use crate::db::{get_snapshot_inner, now_iso, open_db, save_snapshot_inner, SourceInstance};
+use crate::mapping::{is_status_mapped, resolve_column, resolve_priority, StatusMapping};
 use crate::sync::{apply_resolution, plan_sync, snapshot_from_card, Choice, SyncDecisionType};
 
 /// Map a raw upstream card into a local [`Card`] using the source's
@@ -154,7 +155,7 @@ fn map_raw_card(
     let mapped = is_status_mapped(&raw.status_name, mapping);
     let now = now_iso();
     let card = Card {
-        id: format!("{}-{}", source_type, raw.source_ref),
+        id: format!("{}-{}", source_id, raw.source_ref),
         title: raw.title.clone(),
         description: raw.description.clone(),
         priority,
@@ -164,7 +165,6 @@ fn map_raw_card(
         source_ref: Some(raw.source_ref.clone()),
         source_status: Some(raw.status_name.clone()),
         tree_source_id: None,
-        repo_path: None,
         source_instance_id: Some(source_id.to_string()),
         created_at: now.clone(),
         updated_at: now,
@@ -177,7 +177,14 @@ fn map_raw_card(
 async fn load_instance(
     app: &AppHandle,
     source_id: &str,
-) -> Result<(SourceInstance, &'static str, &'static Box<dyn SourceProvider>), String> {
+) -> Result<
+    (
+        SourceInstance,
+        &'static str,
+        &'static Box<dyn SourceProvider>,
+    ),
+    String,
+> {
     // Use the non-redacting read so backend callers (sync, fetch_options)
     // get the real `config.token` needed to authenticate upstream. The IPC
     // `get_source` command masks the token for the UI; using it here would
@@ -187,9 +194,12 @@ async fn load_instance(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("No source instance found for id `{source_id}`"))?;
     let reg = registry();
-    let provider = reg
-        .get(instance.source_type.as_str())
-        .ok_or_else(|| format!("No provider registered for source type `{}`", instance.source_type))?;
+    let provider = reg.get(instance.source_type.as_str()).ok_or_else(|| {
+        format!(
+            "No provider registered for source type `{}`",
+            instance.source_type
+        )
+    })?;
     let source_type = provider.source_type();
     Ok((instance, source_type, provider))
 }
@@ -197,10 +207,7 @@ async fn load_instance(
 /// Fetch cards from a source and apply status/priority mapping. Returns the
 /// mapped cards plus any upstream statuses the user's mapping doesn't cover.
 #[tauri::command]
-pub async fn fetch_source_cards(
-    app: AppHandle,
-    source_id: String,
-) -> Result<FetchResult, String> {
+pub async fn fetch_source_cards(app: AppHandle, source_id: String) -> Result<FetchResult, String> {
     let (instance, source_type, provider) = load_instance(&app, &source_id).await?;
     let raw_cards = provider.fetch_raw(&instance.config).await?;
 
@@ -324,8 +331,7 @@ pub async fn sync_source_inner(
                     conflicts: decision.conflicts.unwrap_or_default(),
                     remote: decision.remote.unwrap_or(remote),
                 };
-                let conflict_json =
-                    serde_json::to_string(&conflict).map_err(|e| e.to_string())?;
+                let conflict_json = serde_json::to_string(&conflict).map_err(|e| e.to_string())?;
                 tx.execute(
                     "INSERT INTO pending_conflicts (source_id, source_ref, conflict_json, created_at)
                      VALUES (?1, ?2, ?3, ?4)
@@ -352,14 +358,15 @@ pub async fn sync_source_inner(
 /// Resolve previously-persisted conflicts. For each resolution: load the
 /// `pending_conflicts` row, deserialize the `SyncConflict`, apply the user's
 /// per-field choices, persist the resolved card + fresh snapshot, then delete
-/// the row. Errors on one resolution abort the batch (frontend re-submits).
+/// the row. The entire batch runs in one transaction so a mid-loop failure
+/// rolls back all upserts/snapshots/deletes — no partial state.
 #[tauri::command]
 pub async fn resolve_conflicts(
     app: AppHandle,
     source_id: String,
     resolutions: Vec<ConflictResolution>,
 ) -> Result<(), String> {
-    let conn = open_db(&app)?;
+    let mut conn = open_db(&app)?;
     // Look up the source instance once to get the source_type for snapshots.
     let instance = get_source(app.clone(), source_id.clone())
         .await?
@@ -367,8 +374,9 @@ pub async fn resolve_conflicts(
     let source_type = instance.source_type.clone();
     let now = now_iso();
 
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
     for resolution in resolutions {
-        let row = conn
+        let row = tx
             .query_row(
                 "SELECT conflict_json FROM pending_conflicts
                  WHERE source_id = ?1 AND source_ref = ?2 LIMIT 1",
@@ -376,8 +384,7 @@ pub async fn resolve_conflicts(
                 |r| r.get::<_, String>(0),
             )
             .map_err(|e| e.to_string())?;
-        let conflict: SyncConflict =
-            serde_json::from_str(&row).map_err(|e| e.to_string())?;
+        let conflict: SyncConflict = serde_json::from_str(&row).map_err(|e| e.to_string())?;
 
         // Translate the string choices ("local"/"remote") into `Choice`.
         let mut choices: HashMap<String, Choice> = HashMap::new();
@@ -390,16 +397,17 @@ pub async fn resolve_conflicts(
         }
 
         let resolved = apply_resolution(&conflict.card, &conflict.conflicts, &choices);
-        upsert_card_from_sync(app.clone(), resolved.clone()).await?;
+        upsert_card_from_sync_inner(&tx, &resolved)?;
         let snap = snapshot_from_card(&resolved, &source_id, &source_type, &now);
-        save_snapshot(app.clone(), snap).await?;
+        save_snapshot_inner(&tx, &snap)?;
 
-        conn.execute(
+        tx.execute(
             "DELETE FROM pending_conflicts WHERE source_id = ?1 AND source_ref = ?2",
             params![source_id, resolution.source_ref],
         )
         .map_err(|e| e.to_string())?;
     }
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -481,7 +489,10 @@ mod tests {
         let mut conn = test_db();
         seed_source(&conn, "src-1", "test");
         let provider = FakeProvider {
-            cards: vec![raw("PROJ-1", "First", "To Do"), raw("PROJ-2", "Second", "Done")],
+            cards: vec![
+                raw("PROJ-1", "First", "To Do"),
+                raw("PROJ-2", "Second", "Done"),
+            ],
             fail: false,
         };
         let result = sync_source_inner(
@@ -497,9 +508,15 @@ mod tests {
 
         assert_eq!(result.imported_count, 2);
         assert!(result.conflicts.is_empty());
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM cards WHERE source = 'test'"), 2);
         assert_eq!(
-            count(&conn, "SELECT COUNT(*) FROM external_snapshots WHERE source = 'test'"),
+            count(&conn, "SELECT COUNT(*) FROM cards WHERE source = 'test'"),
+            2
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM external_snapshots WHERE source = 'test'"
+            ),
             2
         );
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM pending_conflicts"), 0);
@@ -510,19 +527,22 @@ mod tests {
         let mut conn = test_db();
         seed_source(&conn, "src-1", "test");
         // Pre-insert a card whose id collides with the id `map_raw_card` will
-        // build for PROJ-2 (`{source_type}-{source_ref}` = "test-PROJ-2"), but
+        // build for PROJ-2 (`{source_id}-{source_ref}` = "src-1-PROJ-2"), but
         // with a different source_ref so the upsert takes the INSERT path and
         // hits the PRIMARY KEY violation. PROJ-1 upserts first; PROJ-2 fails
         // mid-loop; the whole transaction must roll back.
         conn.execute(
-            r#"INSERT INTO cards (id, title, "column", source, position, source_ref, created_at, updated_at)
-               VALUES ('test-PROJ-2', 'blocker', 'backlog', 'test', 99, 'OTHER', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
+            r#"INSERT INTO cards (id, title, "column", source, position, source_ref, source_instance_id, created_at, updated_at)
+               VALUES ('src-1-PROJ-2', 'blocker', 'backlog', 'test', 99, 'OTHER', 'src-1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
             [],
         )
         .unwrap();
 
         let provider = FakeProvider {
-            cards: vec![raw("PROJ-1", "First", "To Do"), raw("PROJ-2", "Second", "Done")],
+            cards: vec![
+                raw("PROJ-1", "First", "To Do"),
+                raw("PROJ-2", "Second", "Done"),
+            ],
             fail: false,
         };
         let err = sync_source_inner(
@@ -535,25 +555,36 @@ mod tests {
         )
         .await
         .expect_err("mid-loop failure should surface an error");
-        assert!(err.contains("UNIQUE") || err.contains("constraint") || err.contains("PRIMARY"),
-            "error should mention the constraint violation, got: {err}");
+        assert!(
+            err.contains("UNIQUE") || err.contains("constraint") || err.contains("PRIMARY"),
+            "error should mention the constraint violation, got: {err}"
+        );
 
         // PROJ-1 was upserted inside the transaction before the failure — it
         // must have been rolled back.
         assert_eq!(
-            count(&conn, "SELECT COUNT(*) FROM cards WHERE source = 'test' AND source_ref = 'PROJ-1'"),
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM cards WHERE source = 'test' AND source_ref = 'PROJ-1'"
+            ),
             0
         );
         // No snapshots persisted this run.
         assert_eq!(
-            count(&conn, "SELECT COUNT(*) FROM external_snapshots WHERE source = 'test'"),
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM external_snapshots WHERE source = 'test'"
+            ),
             0
         );
         // No pending conflicts persisted.
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM pending_conflicts"), 0);
         // The pre-existing row (inserted outside the tx) survives.
         assert_eq!(
-            count(&conn, "SELECT COUNT(*) FROM cards WHERE source = 'test' AND source_ref = 'OTHER'"),
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM cards WHERE source = 'test' AND source_ref = 'OTHER'"
+            ),
             1
         );
     }
@@ -577,7 +608,10 @@ mod tests {
         .await
         .expect_err("fetch failure should surface an error");
         assert!(err.contains("fetch failed"), "got: {err}");
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM cards WHERE source = 'test'"), 0);
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM cards WHERE source = 'test'"),
+            0
+        );
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM pending_conflicts"), 0);
     }
 }

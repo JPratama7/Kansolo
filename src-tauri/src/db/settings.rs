@@ -1,5 +1,5 @@
-// Settings/snapshot/tree/source commands — filled in step n3
-use crate::db::{open_db, now_iso, ExternalSnapshot, SourceInstance, StatusMapping, TreeSource};
+// Settings, snapshots, tree sources, and source-instance commands.
+use crate::db::{now_iso, open_db, ExternalSnapshot, SourceInstance, StatusMapping, TreeSource};
 use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -43,10 +43,7 @@ pub async fn get_all_settings(app: AppHandle) -> Result<HashMap<String, String>,
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })
         .map_err(|e| e.to_string())?;
     let mut out = HashMap::new();
@@ -204,6 +201,11 @@ pub async fn update_tree_source(
     let editor_command = editor_command
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
+    if crate::db::agent_runs::is_tree_source_locked(&conn, &id) {
+        return Err(format!(
+            "Tree source '{id}' is locked by an active agent run on a linked card."
+        ));
+    }
     conn.execute(
         "UPDATE tree_sources SET label = ?1, path = ?2, editor_command = ?3 WHERE id = ?4",
         params![label, path, editor_command, id],
@@ -214,7 +216,10 @@ pub async fn update_tree_source(
 
 /// Resolve a tree source's path by id. Sync helper used by the ACP runner
 /// to find a card's repo when no explicit `repo_path` is set.
-pub fn get_tree_source_path(conn: &Connection, id: &str) -> Result<Option<String>, crate::error::AcpError> {
+pub(crate) fn get_tree_source_path(
+    conn: &Connection,
+    id: &str,
+) -> Result<Option<String>, crate::error::AcpError> {
     conn.query_row(
         "SELECT path FROM tree_sources WHERE id = ?1",
         params![id],
@@ -230,10 +235,13 @@ pub fn get_tree_source_path(conn: &Connection, id: &str) -> Result<Option<String
 /// Count cards still linked to a tree source. Returns an error message
 /// if any cards reference it, or `Ok(())` if deletion is safe.
 pub(crate) fn ensure_tree_source_deletable(conn: &Connection, id: &str) -> Result<(), String> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM cards WHERE tree_source_id = ?1",
-        params![id], |r| r.get(0),
-    ).map_err(|e| e.to_string())?;
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM cards WHERE tree_source_id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
     if count > 0 {
         return Err(format!(
             "Cannot delete tree source: {count} card(s) still linked. Remove the link from those cards first."
@@ -293,22 +301,15 @@ fn parse_source_row(row: &rusqlite::Row, redact: bool) -> rusqlite::Result<Sourc
     let status_mapping_json: String = row.get("status_mapping_json")?;
     let enabled: i64 = row.get("enabled")?;
     let mut config: Value = serde_json::from_str(&config_json).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Text,
-            Box::new(e),
-        )
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
     })?;
     if redact {
         redact_config_token(&mut config);
     }
-    let status_mapping: StatusMapping = serde_json::from_str(&status_mapping_json).map_err(|e| {
-        rusqlite::Error::FromSqlConversionFailure(
-            1,
-            rusqlite::types::Type::Text,
-            Box::new(e),
-        )
-    })?;
+    let status_mapping: StatusMapping =
+        serde_json::from_str(&status_mapping_json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
+        })?;
     Ok(SourceInstance {
         id: row.get("id")?,
         source_type: row.get("source_type")?,
@@ -332,7 +333,8 @@ fn row_to_source_instance_unredacted(row: &rusqlite::Row) -> rusqlite::Result<So
     parse_source_row(row, false)
 }
 
-const SOURCE_COLUMNS: &str = "id, source_type, label, config_json, status_mapping_json, enabled, created_at";
+const SOURCE_COLUMNS: &str =
+    "id, source_type, label, config_json, status_mapping_json, enabled, created_at";
 
 /// List all registered source instances, ordered by label ascending.
 #[tauri::command]
@@ -403,8 +405,7 @@ pub async fn add_source(
     let id = uuid::Uuid::new_v4().to_string();
     let created_at = now_iso();
     let config_json = serde_json::to_string(&config).map_err(|e| e.to_string())?;
-    let status_mapping_json =
-        serde_json::to_string(&status_mapping).map_err(|e| e.to_string())?;
+    let status_mapping_json = serde_json::to_string(&status_mapping).map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT INTO sources (id, source_type, label, config_json, status_mapping_json, enabled, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6)",
@@ -429,14 +430,36 @@ pub async fn update_source(
     app: AppHandle,
     id: String,
     label: String,
-    config: Value,
+    mut config: Value,
     status_mapping: StatusMapping,
     enabled: bool,
 ) -> Result<(), String> {
     let conn = open_db(&app)?;
+    // If the frontend round-tripped the redacted token sentinel, preserve
+    // the stored token instead of overwriting it with the mask.
+    let config_has_redacted = config
+        .get("token")
+        .and_then(|v| v.as_str())
+        .map(|s| s == REDACTED_TOKEN)
+        .unwrap_or(false);
+    if config_has_redacted {
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT config_json FROM sources WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, String>(0),
+            )
+            .ok()
+            .and_then(|json| serde_json::from_str::<Value>(&json).ok())
+            .and_then(|v| v.get("token").and_then(|t| t.as_str()).map(|s| s.to_string()));
+        if let Some(real_token) = stored {
+            if let Some(obj) = config.as_object_mut() {
+                obj.insert("token".to_string(), Value::String(real_token));
+            }
+        }
+    }
     let config_json = serde_json::to_string(&config).map_err(|e| e.to_string())?;
-    let status_mapping_json =
-        serde_json::to_string(&status_mapping).map_err(|e| e.to_string())?;
+    let status_mapping_json = serde_json::to_string(&status_mapping).map_err(|e| e.to_string())?;
     conn.execute(
         "UPDATE sources SET label = ?1, config_json = ?2, status_mapping_json = ?3, enabled = ?4
          WHERE id = ?5",
@@ -544,7 +567,10 @@ mod source_instance_parse_tests {
         assert_eq!(token, super::REDACTED_TOKEN);
         assert_ne!(token, "super-secret");
         // Non-secret fields are preserved.
-        assert_eq!(inst.config.get("email").and_then(|v| v.as_str()), Some("a@b"));
+        assert_eq!(
+            inst.config.get("email").and_then(|v| v.as_str()),
+            Some("a@b")
+        );
     }
 }
 
@@ -564,7 +590,8 @@ mod source_crud_round_trip_tests {
     use rusqlite::params;
     use serde_json::{json, Value};
 
-    const COLS: &str = "id, source_type, label, config_json, status_mapping_json, enabled, created_at";
+    const COLS: &str =
+        "id, source_type, label, config_json, status_mapping_json, enabled, created_at";
 
     /// Mirror of `add_source`'s INSERT. Returns the inserted id.
     fn add_source(
@@ -656,7 +683,13 @@ mod source_crud_round_trip_tests {
     #[test]
     fn update_source_persists_label_config_and_enabled() {
         let conn = test_db();
-        let id = add_source(&conn, "jira", "Old", &json!({"base_url": "https://old"}), &mapping());
+        let id = add_source(
+            &conn,
+            "jira",
+            "Old",
+            &json!({"base_url": "https://old"}),
+            &mapping(),
+        );
 
         let new_mapping = StatusMapping {
             backlog: vec!["Backlog".to_string()],
@@ -692,14 +725,29 @@ mod source_crud_round_trip_tests {
         conn.execute("DELETE FROM sources WHERE id = ?1", params![id])
             .unwrap();
 
-        assert!(get_source(&conn, &id).is_none(), "row must be gone after delete");
+        assert!(
+            get_source(&conn, &id).is_none(),
+            "row must be gone after delete"
+        );
     }
 
     #[test]
     fn list_sources_orders_by_label_and_redacts_tokens() {
         let conn = test_db();
-        add_source(&conn, "jira", "Zeta", &json!({"token": "z-secret"}), &mapping());
-        add_source(&conn, "jira", "Alpha", &json!({"token": "a-secret"}), &mapping());
+        add_source(
+            &conn,
+            "jira",
+            "Zeta",
+            &json!({"token": "z-secret"}),
+            &mapping(),
+        );
+        add_source(
+            &conn,
+            "jira",
+            "Alpha",
+            &json!({"token": "a-secret"}),
+            &mapping(),
+        );
 
         let list = list_sources(&conn);
         assert_eq!(list.len(), 2);
@@ -732,10 +780,15 @@ mod source_crud_round_trip_tests {
         let parts = inst.config.get("jql_parts").unwrap();
         assert_eq!(parts.get("project"), Some(&json!("PROJ")));
         assert_eq!(
-            parts.get("labels").and_then(|v| v.as_array()).map(|a| a.len()),
+            parts
+                .get("labels")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
             Some(2)
         );
-        assert_eq!(parts.get("nested").and_then(|v| v.get("k")), Some(&json!(7)));
+        assert_eq!(
+            parts.get("nested").and_then(|v| v.get("k")),
+            Some(&json!(7))
+        );
     }
 }
-
