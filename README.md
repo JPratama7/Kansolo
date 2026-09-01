@@ -1,6 +1,7 @@
 # Kansolo
 
-Solo kanban desktop app with plugin-based external source sync. Built with Tauri 2, Rust, Deno, TypeScript, and SolidJS.
+Solo kanban desktop app with plugin-based external source sync. Built with Tauri
+2, Rust, Deno, TypeScript, and SolidJS.
 
 ## Tech Stack
 
@@ -73,7 +74,8 @@ Solo kanban desktop app with plugin-based external source sync. Built with Tauri
 
 ### Source Plugins
 
-- `SourceProvider` trait in Rust (`source_type`, `display_label`, `fetch_raw`, `fetch_options`)
+- `SourceProvider` trait in Rust (`source_type`, `display_label`, `fetch_raw`,
+  `fetch_options`)
 - Registry maps source type → provider
 - `list_source_types` auto-exposes registered sources to UI
 - `sync_source` / `resolve_conflicts` work for any source
@@ -102,9 +104,11 @@ Solo kanban desktop app with plugin-based external source sync. Built with Tauri
 
 ## Architecture
 
-- All source logic (fetching, query building, mapping, 3-way sync merge) lives in Rust
+- All source logic (fetching, query building, mapping, 3-way sync merge) lives
+  in Rust
 - TS only renders UI and invokes Tauri commands
-- Source instance config stored as JSON in `sources` table (`config_json`, snake_case keys)
+- Source instance config stored as JSON in `sources` table (`config_json`,
+  snake_case keys)
 - Cards reference external origin via `source_ref` / `source_status` columns
 - SQLite at `{app_config_dir}/tasker.db` with WAL + busy_timeout
 
@@ -112,17 +116,17 @@ Solo kanban desktop app with plugin-based external source sync. Built with Tauri
 
 To add a new external source:
 
-1. Add a Rust module `src-tauri/src/source/<type>.rs` implementing `SourceProvider`
-   (implement `source_type()`, `display_label()`, `fetch_raw(config)`,
-   and optionally `fetch_options(config)`).
+1. Add a Rust module `src-tauri/src/source/<type>.rs` implementing
+   `SourceProvider` (implement `source_type()`, `display_label()`,
+   `fetch_raw(config)`, and optionally `fetch_options(config)`).
 2. Register it in `source::registry()` in `src-tauri/src/source/mod.rs`.
 3. Add a TS settings component `src/components/settings/<Type>Settings.tsx`.
 4. Register it in `src/components/settings/registry.ts`.
 
-No schema change. No new Tauri command. No settings key.
-`list_source_types` exposes it to the UI automatically.
-`sync_source` / `resolve_conflicts` work for any source automatically.
-The Settings screen renders its config form via the registered settings component.
+No schema change. No new Tauri command. No settings key. `list_source_types`
+exposes it to the UI automatically. `sync_source` / `resolve_conflicts` work for
+any source automatically. The Settings screen renders its config form via the
+registered settings component.
 
 ## Development
 

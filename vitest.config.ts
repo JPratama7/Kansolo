@@ -10,7 +10,9 @@ export default defineConfig({
     environment: "happy-dom",
     include: ["src/**/*.test.tsx"],
     deps: {
-      optimizer: { web: { include: ["solid-js", "solid-js/web", "solid-js/store"] } },
+      optimizer: {
+        web: { include: ["solid-js", "solid-js/web", "solid-js/store"] },
+      },
     },
   },
 });
