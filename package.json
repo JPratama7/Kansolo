@@ -13,7 +13,10 @@
   "license": "MIT",
   "dependencies": {
     "@ark-ui/solid": "^5.39.0",
+    "@git-diff-view/solid": "^0.1.7",
     "@tailwindcss/vite": "^4.3.3",
+    "highlight.js": "~11.11.0",
+    "lowlight": "^3.3.0",
     "micromark": "^4.0.2",
     "solid-js": "^1.9.3",
     "@tauri-apps/api": "^2",
