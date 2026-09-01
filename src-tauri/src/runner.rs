@@ -12,7 +12,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, Notify, mpsc};
+use tokio::sync::{mpsc, Mutex, Notify};
 use tokio_util::sync::CancellationToken;
 
 use crate::db::agent_runs;
@@ -26,6 +26,10 @@ use crate::worktree::WorktreeManager;
 pub struct RunHandle {
     pub join: tokio::task::JoinHandle<()>,
     pub cancel: CancellationToken,
+    /// Sender for follow-up prompts when the agent stops with EndTurn and
+    /// the user types a reply in the popup. `None` for runs that don't
+    /// support interaction (CLI auto-complete).
+    pub prompt_tx: Option<mpsc::UnboundedSender<String>>,
 }
 
 /// Updates emitted by a run, streamed to the GUI/CLI via an `UpdateSink`.
@@ -33,32 +37,31 @@ pub struct RunHandle {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum RunUpdate {
     /// A session/update notification from the agent (streaming output).
-    SessionUpdate {
-        text: String,
-    },
+    SessionUpdate { text: String },
     /// The session ID was received.
-    SessionId {
-        session_id: String,
-    },
+    #[serde(rename_all = "camelCase")]
+    SessionId { session_id: String },
     /// The run completed successfully.
-    Completed {
-        output: String,
-        stop_reason: String,
-    },
+    #[serde(rename_all = "camelCase")]
+    Completed { output: String, stop_reason: String },
     /// The run failed.
-    Failed {
-        error: String,
-    },
+    Failed { error: String },
     /// The run was cancelled.
     Cancelled,
     /// A permission request was received from the agent.
     /// The GUI should respond via `acp_respond_permission`.
+    #[serde(rename_all = "camelCase")]
     PermissionRequest {
         request_id: String,
         description: String,
     },
     /// A permission request timed out (5min, auto-denied).
     PermissionTimeout,
+    /// The agent stopped with a turn-ending reason (e.g. EndTurn) and is
+    /// waiting for the user to send a follow-up prompt or complete the run.
+    /// The UI should show an input field.
+    #[serde(rename_all = "camelCase")]
+    WaitingForInput { stop_reason: String },
 }
 
 /// Trait for receiving run updates. Implemented by both the Tauri event
@@ -67,15 +70,23 @@ pub trait UpdateSink: Send + 'static {
     fn send_update(&self, run_id: &str, update: RunUpdate);
 }
 
-/// Buffer of updates for a run, with a dirty flag for polling.
+/// Buffer of updates for a run, with a dirty flag for polling and an
+/// accumulated output log for persistence.
 pub struct UpdateBuffer {
     pub updates: Vec<RunUpdate>,
+    /// Accumulated `SessionUpdate` text, written to `agent_runs.output`
+    /// when the run reaches a terminal state.
+    pub output: String,
     pub dirty: bool,
 }
 
 impl UpdateBuffer {
     fn new() -> Self {
-        Self { updates: Vec::new(), dirty: false }
+        Self {
+            updates: Vec::new(),
+            output: String::new(),
+            dirty: false,
+        }
     }
 }
 
@@ -130,9 +141,11 @@ impl RunCore {
     ) -> Result<(String, String), AcpError> {
         // Step 4: Create worktree.
         let wt_mgr = WorktreeManager::new(&PathBuf::from(&repo_path));
+        eprintln!("[create_run:{run_id}] step4 creating worktree under {repo_path}");
         let worktree = wt_mgr.create(&card_id).await?;
         let branch = worktree.branch.clone();
         let worktree_path = worktree.path.clone();
+        eprintln!("[create_run:{run_id}] step4 worktree created: {} branch={branch}", worktree_path.display());
 
         // Step 9: Spawn SDK connection.
         let (tx, rx) = mpsc::unbounded_channel::<RunUpdate>();
@@ -148,6 +161,17 @@ impl RunCore {
         // its own short-lived connection by path).
         let db_path_for_perms = db_path.clone();
 
+        // Channel for follow-up prompts from the user (interactive mode).
+        // The read loop waits on this after each EndTurn instead of exiting,
+        // keeping the agent process alive for the next turn. Wrapped in
+        // Arc<Mutex<Option<_>>> because connect_with's closure is Fn (not
+        // FnOnce), so the receiver can't be moved directly — it's taken
+        // from the Option on the single actual call.
+        let (prompt_tx, prompt_rx) = mpsc::unbounded_channel::<String>();
+        let prompt_tx_for_handle = prompt_tx.clone();
+        let prompt_rx = Arc::new(tokio::sync::Mutex::new(Some(prompt_rx)));
+
+        eprintln!("[create_run:{run_id}] step9 spawning agent subprocess");
         let join = tokio::spawn(async move {
             let tx_for_err = tx.clone();
             let cancel_for_closure = cancel.clone();
@@ -160,9 +184,15 @@ impl RunCore {
                     let run_id_inner = run_id_clone.clone();
                     let cancel_inner = cancel_for_closure.clone();
                     let db_path_inner = db_path_for_perms.clone();
+                    let prompt_rx = prompt_rx.clone();
                     async move {
+                        // Take the receiver from the Arc<Mutex<Option<_>>>.
+                        // Only the first call to this closure gets it.
+                        let mut prompt_rx = prompt_rx.lock().await.take();
+                        eprintln!("[create_run:{}] connect_with closure entered, building session cwd={}", run_id_inner, cwd.display());
                         let mut session = cx.build_session(&cwd).block_task().start_session().await?;
                         let session_id = session.session_id().0.clone();
+                        eprintln!("[create_run:{}] session started: id={}", run_id_inner, session_id);
                         let _ = tx.send(RunUpdate::SessionId {
                             session_id: session_id.to_string(),
                         });
@@ -170,7 +200,9 @@ impl RunCore {
                         // the `session/cancel` notification without borrowing
                         // `session` while `read_update()`'s future is live.
                         let conn_for_cancel = session.connection().clone();
+                        eprintln!("[create_run:{}] sending prompt ({} chars)", run_id_inner, prompt.len());
                         session.send_prompt(&prompt)?;
+                        eprintln!("[create_run:{}] prompt sent, reading updates", run_id_inner);
                         // Read updates until stop reason, or until cancelled.
                         // On cancel, send the ACP `session/cancel` notification
                         // (cooperative — the agent may ignore it) and emit a
@@ -179,135 +211,235 @@ impl RunCore {
                         // connection's `ChildGuard`, which SIGKILL's the entire
                         // process group after a 1s grace period — so even an
                         // agent that ignores `session/cancel` is hard-killed.
+                        //
+                        // `followup` is set when the agent stops with EndTurn
+                        // and the user sends a reply. It's checked AFTER the
+                        // select block so the `read` future (which mutably
+                        // borrows `session`) is dropped before `send_prompt`.
+                        //
+                        // `pending_chunk` accumulates `agent_message_chunk`
+                        // fragments of ONE message (same messageId) and
+                        // flushes them as a single SessionUpdate on any
+                        // boundary — otherwise every chunk becomes its own
+                        // bubble in the panel.
+                        let mut pending_chunk: Option<(Option<String>, String)> = None;
                         loop {
-                            let read = session.read_update();
-                            tokio::pin!(read);
-                            tokio::select! {
-                                biased;
-                                _ = cancel_inner.cancelled() => {
-                                    // The `read` future (mutable borrow of
-                                    // `session`) is dropped at the end of this
-                                    // select branch; we use the owned
-                                    // `conn_for_cancel` clone below, so no
-                                    // borrow conflict.
-                                    // Best-effort cooperative cancel: ask the
-                                    // agent to stop. If it ignores the
-                                    // notification, the SDK's ChildGuard
-                                    // (installed by `connect_with`) SIGKILL's
-                                    // the process group when this closure
-                                    // returns and the connection drops.
-                                    let _ = conn_for_cancel.send_notification(
-                                        agent_client_protocol::schema::v1::CancelNotification::new(session_id.clone()),
-                                    );
-                                    let _ = tx.send(RunUpdate::Cancelled);
-                                    break;
-                                }
-                                msg = read => {
-                                    match msg {
-                                        Ok(msg) => {
-                                            use agent_client_protocol::SessionMessage;
-                                            match msg {
-                                                SessionMessage::SessionMessage(dispatch) => {
-                                                    // Check for permission requests.
-                                                    let method = dispatch.method().to_string();
-                                                    if method == "session/requestPermission" {
-                                                        use agent_client_protocol::schema::v1::RequestPermissionRequest;
-                                                        match dispatch.into_request::<RequestPermissionRequest>() {
-                                                            Ok(Ok((req, responder))) => {
-                                                                let req_id = format!("{}:{}", run_id_inner, req.tool_call.tool_call_id.0);
-                                                                let description = summarize_tool_call(&req.tool_call);
-                                                                let option_id = pick_allow_option(&req.options);
-                                                                let responded = Arc::new(Notify::new());
-                                                                let pending = Arc::new(PendingPermission {
-                                                                    responder: tokio::sync::Mutex::new(Some(responder)),
-                                                                    option_id,
-                                                                    responded: responded.clone(),
-                                                                });
-                                                                {
-                                                                    let mut perms = permissions_map.lock().await;
-                                                                    perms.insert(req_id.clone(), pending.clone());
-                                                                }
-                                                                let _ = tx.send(RunUpdate::PermissionRequest {
-                                                                    request_id: req_id.clone(),
-                                                                    description,
-                                                                });
-                                                                // Spawn a per-permission timeout task:
-                                                                // races the timeout against the user
-                                                                // responding (Notify). On expiry, takes
-                                                                // the responder, responds Cancelled to
-                                                                // the SDK, removes the pending entry,
-                                                                // and emits PermissionTimeout.
-                                                                let tx_t = tx.clone();
-                                                                let perms_t = permissions_map.clone();
-                                                                let req_id_t = req_id;
-                                                                let db_path_t = db_path_inner.clone();
-                                                                tokio::spawn(async move {
-                                                                    let timeout = read_permission_timeout(&db_path_t);
-                                                                    tokio::select! {
-                                                                        biased;
-                                                                        _ = responded.notified() => {
-                                                                            // User responded; nothing to do.
-                                                                        }
-                                                                        _ = tokio::time::sleep(std::time::Duration::from_secs(timeout)) => {
-                                                                            let responder_opt = {
-                                                                                let mut guard = pending.responder.lock().await;
-                                                                                guard.take()
-                                                                            };
-                                                                            if let Some(responder) = responder_opt {
-                                                                                {
-                                                                                    let mut perms = perms_t.lock().await;
-                                                                                    perms.remove(&req_id_t);
-                                                                                }
-                                                                                use agent_client_protocol::schema::v1::{
-                                                                                    RequestPermissionResponse,
-                                                                                    RequestPermissionOutcome,
+                            let mut followup: Option<String> = None;
+                            let mut cancelled = false;
+                            let mut failed = false;
+                            let mut terminal = false;
+                            {
+                                let read = session.read_update();
+                                tokio::pin!(read);
+                                tokio::select! {
+                                    biased;
+                                    _ = cancel_inner.cancelled() => {
+                                        let _ = conn_for_cancel.send_notification(
+                                            agent_client_protocol::schema::v1::CancelNotification::new(session_id.clone()),
+                                        );
+                                        flush_pending_chunk(&mut pending_chunk, &tx);
+                                        let _ = tx.send(RunUpdate::Cancelled);
+                                        cancelled = true;
+                                    }
+                                    msg = read => {
+                                        match msg {
+                                            Ok(msg) => {
+                                                use agent_client_protocol::SessionMessage;
+                                                match msg {
+                                                    SessionMessage::SessionMessage(dispatch) => {
+                                                        let method = dispatch.method().to_string();
+                                                        if method == "session/request_permission" {
+                                                            // A permission request interrupts any in-flight agent
+                                                            // message — flush it first so the reply tail isn't lost.
+                                                            flush_pending_chunk(&mut pending_chunk, &tx);
+                                                            use agent_client_protocol::schema::v1::RequestPermissionRequest;
+                                                            match dispatch.into_request::<RequestPermissionRequest>() {
+                                                                Ok(Ok((req, responder))) => {
+                                                                    let req_id = format!("{}:{}", run_id_inner, req.tool_call.tool_call_id.0);
+                                                                    let description = summarize_tool_call(&req.tool_call);
+                                                                    let option_id = pick_allow_option(&req.options);
+                                                                    let responded = Arc::new(Notify::new());
+                                                                    let pending = Arc::new(PendingPermission {
+                                                                        responder: tokio::sync::Mutex::new(Some(responder)),
+                                                                        option_id,
+                                                                        responded: responded.clone(),
+                                                                    });
+                                                                    {
+                                                                        let mut perms = permissions_map.lock().await;
+                                                                        perms.insert(req_id.clone(), pending.clone());
+                                                                    }
+                                                                    let _ = tx.send(RunUpdate::PermissionRequest {
+                                                                        request_id: req_id.clone(),
+                                                                        description,
+                                                                    });
+                                                                    let tx_t = tx.clone();
+                                                                    let perms_t = permissions_map.clone();
+                                                                    let req_id_t = req_id;
+                                                                    let db_path_t = db_path_inner.clone();
+                                                                    tokio::spawn(async move {
+                                                                        let timeout = read_permission_timeout(&db_path_t);
+                                                                        tokio::select! {
+                                                                            biased;
+                                                                            _ = responded.notified() => {}
+                                                                            _ = tokio::time::sleep(std::time::Duration::from_secs(timeout)) => {
+                                                                                let responder_opt = {
+                                                                                    let mut guard = pending.responder.lock().await;
+                                                                                    guard.take()
                                                                                 };
-                                                                                let _ = responder.respond(
-                                                                                    RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)
-                                                                                );
-                                                                                let _ = tx_t.send(RunUpdate::PermissionTimeout);
+                                                                                if let Some(responder) = responder_opt {
+                                                                                    {
+                                                                                        let mut perms = perms_t.lock().await;
+                                                                                        perms.remove(&req_id_t);
+                                                                                    }
+                                                                                    use agent_client_protocol::schema::v1::{
+                                                                                        RequestPermissionResponse,
+                                                                                        RequestPermissionOutcome,
+                                                                                    };
+                                                                                    let _ = responder.respond(
+                                                                                        RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled)
+                                                                                    );
+                                                                                    let _ = tx_t.send(RunUpdate::PermissionTimeout);
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    });
+                                                                }
+                                                                _ => {
+                                                                    flush_pending_chunk(&mut pending_chunk, &tx);
+                                                                    let text = format!("{:?}", method);
+                                                                    let _ = tx.send(RunUpdate::SessionUpdate { text });
+                                                                }
+                                                            }
+                                                        } else if method == "session/update" {
+                                                            use agent_client_protocol::schema::v1::SessionNotification;
+                                                            match dispatch.into_notification::<SessionNotification>() {
+                                                                Ok(Ok(notif)) => {
+                                                                    use agent_client_protocol::schema::v1::SessionUpdate;
+                                                                    match &notif.update {
+                                                                        // Accumulate message fragments; flush as one update on
+                                                                        // any other update type or a messageId change.
+                                                                        SessionUpdate::AgentMessageChunk(chunk) => {
+                                                                            if let Some(t) = raw_text_from_content(&chunk.content) {
+                                                                                let id = chunk
+                                                                                    .message_id
+                                                                                    .clone()
+                                                                                    .map(|m| m.0.to_string());
+                                                                                match &mut pending_chunk {
+                                                                                    Some((pid, buf)) if *pid == id => buf.push_str(&t),
+                                                                                    _ => {
+                                                                                        flush_pending_chunk(&mut pending_chunk, &tx);
+                                                                                        pending_chunk = Some((id, t));
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                        other => {
+                                                                            flush_pending_chunk(&mut pending_chunk, &tx);
+                                                                            if let Some(text) = format_session_update(other) {
+                                                                                let _ = tx.send(RunUpdate::SessionUpdate { text });
                                                                             }
                                                                         }
                                                                     }
-                                                                });
+                                                                }
+                                                                Ok(Err(_)) => {}
+                                                                Err(e) => {
+                                                                    flush_pending_chunk(&mut pending_chunk, &tx);
+                                                                    let _ = tx.send(RunUpdate::SessionUpdate {
+                                                                        text: format!("parse error: {e}"),
+                                                                    });
+                                                                }
                                                             }
-                                                            _ => {
-                                                                let text = format!("{:?}", method);
-                                                                let _ = tx.send(RunUpdate::SessionUpdate { text });
+                                                        } else {
+                                                            flush_pending_chunk(&mut pending_chunk, &tx);
+                                                            let _ = tx.send(RunUpdate::SessionUpdate {
+                                                                text: format!("(unhandled: {method})"),
+                                                            });
+                                                        }
+                                                    }
+                                                    SessionMessage::StopReason(reason) => {
+                                                        eprintln!("[create_run:{}] stop reason: {:?}", run_id_inner, reason);
+                                                        let stop_str = format!("{:?}", reason);
+                                                        // The agent finished replying — flush the last message tail
+                                                        // before signalling the wait state.
+                                                        flush_pending_chunk(&mut pending_chunk, &tx);
+                                                        let _ = tx.send(RunUpdate::WaitingForInput {
+                                                            stop_reason: stop_str.clone(),
+                                                        });
+                                                        // Wait for follow-up prompt or cancel.
+                                                        let rx_alive = prompt_rx.is_some();
+                                                        loop {
+                                                            if !rx_alive {
+                                                                let _ = tx.send(RunUpdate::Completed {
+                                                                    output: String::new(),
+                                                                    stop_reason: stop_str.clone(),
+                                                                });
+                                                                terminal = true;
+                                                                break;
+                                                            }
+                                                            tokio::select! {
+                                                                biased;
+                                                                _ = cancel_inner.cancelled() => {
+                                                                    flush_pending_chunk(&mut pending_chunk, &tx);
+                                                                    let _ = tx.send(RunUpdate::Cancelled);
+                                                                    terminal = true;
+                                                                    break;
+                                                                }
+                                                                msg = prompt_rx.as_mut().unwrap().recv() => {
+                                                                    if let Some(p) = msg {
+                                                                        followup = Some(p);
+                                                                        break;
+                                                                    } else {
+                                                                        flush_pending_chunk(&mut pending_chunk, &tx);
+                                                                        let _ = tx.send(RunUpdate::Completed {
+                                                                            output: String::new(),
+                                                                            stop_reason: stop_str.clone(),
+                                                                        });
+                                                                        terminal = true;
+                                                                        break;
+                                                                    }
+                                                                }
                                                             }
                                                         }
-                                                    } else {
-                                                        let text = format!("{:?}", dispatch);
-                                                        let _ = tx.send(RunUpdate::SessionUpdate { text });
                                                     }
+                                                    _ => {}
                                                 }
-                                                SessionMessage::StopReason(reason) => {
-                                                    let _ = tx.send(RunUpdate::Completed {
-                                                        output: String::new(),
-                                                        stop_reason: format!("{:?}", reason),
-                                                    });
-                                                    break;
-                                                }
-                                                _ => {}
                                             }
-                                        }
-                                        Err(e) => {
-                                            let _ = tx.send(RunUpdate::Failed {
-                                                error: e.to_string(),
-                                            });
-                                            break;
+                                            Err(e) => {
+                                                eprintln!("[create_run:{}] read_update error: {e}", run_id_inner);
+                                                flush_pending_chunk(&mut pending_chunk, &tx);
+                                                let _ = tx.send(RunUpdate::Failed {
+                                                    error: e.to_string(),
+                                                });
+                                                failed = true;
+                                            }
                                         }
                                     }
                                 }
+                            } // `read` future dropped here — `session` is free again.
+                            if cancelled || failed || terminal {
+                                break;
                             }
+                            if let Some(p) = followup {
+                                eprintln!("[create_run:{}] sending follow-up prompt ({} chars)", run_id_inner, p.len());
+                                let _ = tx.send(RunUpdate::SessionUpdate {
+                                    text: format!("— user: {p}"),
+                                });
+                                session.send_prompt(&p)?;
+                                continue;
+                            }
+                            // Normal SessionMessage update — keep reading.
+                            continue;
                         }
                         Ok(())
                     }
                 })
                 .await;
             match result {
-                Ok(()) => {}
+                Ok(()) => {
+                    eprintln!("[create_run] connect_with returned Ok");
+                }
                 Err(e) => {
+                    eprintln!("[create_run] connect_with returned Err: {e}");
                     let _ = tx_for_err.send(RunUpdate::Failed {
                         error: e.to_string(),
                     });
@@ -318,7 +450,14 @@ impl RunCore {
         // Step 10: Store RunHandle.
         {
             let mut runs = self.runs.lock().await;
-            runs.insert(run_id_for_handle.clone(), RunHandle { join, cancel: cancel_for_handle });
+            runs.insert(
+                run_id_for_handle.clone(),
+                RunHandle {
+                    join,
+                    cancel: cancel_for_handle,
+                    prompt_tx: Some(prompt_tx_for_handle),
+                },
+            );
         }
         {
             let mut buffers = self.buffers.lock().await;
@@ -347,19 +486,12 @@ impl RunCore {
         };
         if let Some(handle) = handle {
             handle.cancel.cancel();
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                handle.join,
-            ).await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle.join).await;
         }
     }
 
     /// List updates since cursor. Clears dirty flag (decision 22).
-    pub async fn list_updates(
-        &self,
-        run_id: &str,
-        cursor: usize,
-    ) -> Vec<RunUpdate> {
+    pub async fn list_updates(&self, run_id: &str, cursor: usize) -> Vec<RunUpdate> {
         let mut buffers = self.buffers.lock().await;
         if let Some(buf) = buffers.get_mut(run_id) {
             buf.dirty = false;
@@ -385,9 +517,7 @@ impl RunCore {
         approved: bool,
     ) -> Result<(), AcpError> {
         use agent_client_protocol::schema::v1::{
-            RequestPermissionResponse,
-            RequestPermissionOutcome,
-            SelectedPermissionOutcome,
+            RequestPermissionOutcome, RequestPermissionResponse, SelectedPermissionOutcome,
         };
         let pending = {
             let mut perms = self.permissions.lock().await;
@@ -402,20 +532,37 @@ impl RunCore {
         };
         if let Some(responder) = responder {
             let outcome = if approved {
-                RequestPermissionOutcome::Selected(
-                    SelectedPermissionOutcome::new(pending.option_id.clone())
-                )
+                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                    pending.option_id.clone(),
+                ))
             } else {
                 RequestPermissionOutcome::Cancelled
             };
             let response = RequestPermissionResponse::new(outcome);
-            responder.respond(response)
+            responder
+                .respond(response)
                 .map_err(|e| AcpError::internal(&format!("permission respond failed: {e}")))?;
         }
         // Wake the timeout task so it exits early instead of sleeping the
         // full duration after the user already answered.
         pending.responded.notify_one();
         Ok(())
+    }
+
+    /// Send a follow-up prompt to a running agent session. The run must be
+    /// in the `WaitingForInput` state (agent stopped with EndTurn and is
+    /// waiting for user input).
+    pub async fn send_followup(&self, run_id: &str, text: String) -> Result<(), AcpError> {
+        let runs = self.runs.lock().await;
+        let handle = runs.get(run_id).ok_or_else(|| {
+            AcpError::not_found(&format!("run not found: {run_id}"))
+        })?;
+        let tx = handle.prompt_tx.as_ref().ok_or_else(|| {
+            AcpError::internal("this run does not support follow-up prompts")
+        })?;
+        tx.send(text).map_err(|_| {
+            AcpError::internal("failed to send follow-up prompt: channel closed")
+        })
     }
 
     /// Shutdown all active runs. Called on app exit.
@@ -428,10 +575,7 @@ impl RunCore {
         let mut ids = Vec::new();
         for (run_id, handle) in runs {
             handle.cancel.cancel();
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                handle.join,
-            ).await;
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle.join).await;
             ids.push(run_id);
         }
         ids
@@ -464,9 +608,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// Structured summary of a permission request's tool call: tool title +
 /// raw_input JSON truncated at 500 chars. Replaces the old `format!("{:?}")`
 /// debug dump, which leaked SDK-internal field noise to the UI.
-fn summarize_tool_call(
-    tc: &agent_client_protocol::schema::v1::ToolCallUpdate,
-) -> String {
+pub fn summarize_tool_call(tc: &agent_client_protocol::schema::v1::ToolCallUpdate) -> String {
     let title = tc.fields.title.as_deref().unwrap_or("(unknown tool)");
     let args = match &tc.fields.raw_input {
         Some(v) => {
@@ -482,24 +624,132 @@ fn summarize_tool_call(
     }
 }
 
+/// Render an ACP `SessionUpdate` as human-readable text for the run panel.
+/// Returns `None` for update kinds that are pure noise in a compact log
+/// (available commands, mode/config changes, usage stats, plan metadata)
+/// so the caller can skip emitting them entirely.
+///
+/// Why not `format!("{:?}", update)`: the Debug dump leaks SDK-internal
+/// field names, enum variant paths, and `_meta` blobs that the user never
+/// wants to see in the popup. This helper extracts only the meaningful
+/// payload (agent text, tool titles, statuses) and formats it as plain
+/// text the panel already knows how to render.
+pub fn format_session_update(update: &agent_client_protocol::schema::v1::SessionUpdate) -> Option<String> {
+    use agent_client_protocol::schema::v1::{SessionUpdate, ToolCallStatus};
+    match update {
+        // The agent's streamed reply — the primary signal the user wants.
+        SessionUpdate::AgentMessageChunk(chunk) => text_from_content(&chunk.content),
+        // Internal reasoning; show but dim via prefix so it's distinguishable.
+        SessionUpdate::AgentThoughtChunk(chunk) => {
+            text_from_content(&chunk.content).map(|t| format!("💭 {t}"))
+        }
+        // A new tool call was initiated. Show its title + kind.
+        SessionUpdate::ToolCall(tc) => {
+            let title = tc.title.trim();
+            if title.is_empty() { None } else { Some(format!("🔧 {title}")) }
+        }
+        // Status/title/content update on an existing tool call.
+        SessionUpdate::ToolCallUpdate(tc) => {
+            let title = tc.fields.title.as_deref().map(str::trim).unwrap_or("");
+            let status = tc.fields.status.unwrap_or(ToolCallStatus::Pending);
+            let label = if title.is_empty() { "(tool)" } else { title };
+            let mark = match status {
+                ToolCallStatus::InProgress => "…",
+                ToolCallStatus::Completed => "✓",
+                ToolCallStatus::Failed => "✗",
+                _ => "·",
+            };
+            // Only emit on a meaningful state transition; skip empty updates.
+            if matches!(status, ToolCallStatus::Pending) && title.is_empty() {
+                None
+            } else {
+                Some(format!("🔧 {mark} {label}"))
+            }
+        }
+        // Echo of the user's own prompt — drop to avoid duplicating the input.
+        SessionUpdate::UserMessageChunk(_) => None,
+        // Metadata-only updates: noisy, no actionable content for the popup.
+        SessionUpdate::AvailableCommandsUpdate(_)
+        | SessionUpdate::CurrentModeUpdate(_)
+        | SessionUpdate::ConfigOptionUpdate(_)
+        | SessionUpdate::SessionInfoUpdate(_)
+        | SessionUpdate::UsageUpdate(_) => None,
+        // Plan updates are rare and verbose; surface a one-line marker.
+        SessionUpdate::Plan(_) => Some("📋 plan".to_string()),
+        _ => None,
+    }
+}
+
+/// Extract text from a `ContentBlock`. Only `Text` carries a string payload
+/// the popup can usefully display; images/audio/resources are dropped (the
+/// panel has no renderer for them).
+fn text_from_content(block: &agent_client_protocol::schema::v1::ContentBlock) -> Option<String> {
+    use agent_client_protocol::schema::v1::ContentBlock;
+    match block {
+        ContentBlock::Text(t) => {
+            let s = t.text.trim();
+            if s.is_empty() { None } else { Some(s.to_string()) }
+        }
+        _ => None,
+    }
+}
+
+/// Untrimmed text variant for chunk accumulation — fragments must join
+/// byte-for-byte, so per-chunk trimming would corrupt the assembled message.
+fn raw_text_from_content(block: &agent_client_protocol::schema::v1::ContentBlock) -> Option<String> {
+    use agent_client_protocol::schema::v1::ContentBlock;
+    match block {
+        ContentBlock::Text(t) => {
+            if t.text.is_empty() { None } else { Some(t.text.clone()) }
+        }
+        _ => None,
+    }
+}
+
+/// Flush an accumulated agent message as ONE SessionUpdate. `pending` holds
+/// `(message_id, joined text)`; the text is trimmed as a whole at flush so
+/// mid-message whitespace survives and leading/trailing noise is dropped.
+fn flush_pending_chunk(
+    pending: &mut Option<(Option<String>, String)>,
+    tx: &tokio::sync::mpsc::UnboundedSender<RunUpdate>,
+) {
+    if let Some((_, text)) = pending.take() {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            let _ = tx.send(RunUpdate::SessionUpdate {
+                text: trimmed.to_string(),
+            });
+        }
+    }
+}
+
 /// Pick the "allow" option from a permission request's option list.
-/// Matches the option whose `name` contains "allow" or "yes"
-/// (case-insensitive); falls back to the first option only if none match.
-/// Defends against agents that order options as `[Deny, Allow]` — the old
-/// `first()` logic would have approved "Deny".
-fn pick_allow_option(
+/// Selects by `PermissionOptionKind` (AllowOnce preferred over AllowAlways)
+/// rather than matching the option `name` — name matching was fragile: an
+/// agent naming its options `["Permit always", "Deny"]` (no "allow"/"yes"
+/// substring) caused the old fallback to return the first option, which could
+/// be a Reject. When no Allow-kind option is present, returns the literal
+/// `"allow"` id so the agent errors clearly instead of silently receiving a
+/// Reject the user never chose.
+pub fn pick_allow_option(
     options: &[agent_client_protocol::schema::v1::PermissionOption],
 ) -> agent_client_protocol::schema::v1::PermissionOptionId {
+    use agent_client_protocol::schema::v1::PermissionOptionKind;
+    // Prefer AllowOnce (least privilege) over AllowAlways.
     for o in options {
-        let lower = o.name.to_lowercase();
-        if lower.contains("allow") || lower.contains("yes") {
+        if matches!(o.kind, PermissionOptionKind::AllowOnce) {
             return o.option_id.clone();
         }
     }
-    options
-        .first()
-        .map(|o| o.option_id.clone())
-        .unwrap_or_else(|| "allow".into())
+    for o in options {
+        if matches!(o.kind, PermissionOptionKind::AllowAlways) {
+            return o.option_id.clone();
+        }
+    }
+    // No Allow-kind option: do NOT fall back to first (could be Reject).
+    // Return literal "allow" so a misbehaving agent surfaces a clear error
+    // ponytail: could log the option list here for debugging; not added yet.
+    "allow".into()
 }
 
 /// Read the `acp_permission_timeout` setting (seconds, default 300) from
@@ -538,10 +788,24 @@ async fn drain_updates(
 ) {
     while let Some(update) = rx.recv().await {
         let mut buffers = buffers.lock().await;
-        if let Some(buf) = buffers.get_mut(&run_id) {
+        let output = if let Some(buf) = buffers.get_mut(&run_id) {
+            if let RunUpdate::SessionUpdate { text } = &update {
+                if !buf.output.is_empty() {
+                    buf.output.push('\n');
+                }
+                buf.output.push_str(text);
+            }
             buf.updates.push(update.clone());
             buf.dirty = true;
-        }
+            match &update {
+                RunUpdate::Completed { .. } | RunUpdate::Failed { .. } | RunUpdate::Cancelled => {
+                    Some(buf.output.clone())
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
         // Check for terminal states — remove handle + write DB status.
         match &update {
             RunUpdate::Completed { stop_reason, .. } => {
@@ -549,7 +813,14 @@ async fn drain_updates(
                 runs.remove(&run_id);
                 drop(buffers);
                 drop(runs);
-                write_terminal_status(&db_path, &run_id, "completed", None, Some(stop_reason), None);
+                write_terminal_status(
+                    &db_path,
+                    &run_id,
+                    "completed",
+                    output.as_deref(),
+                    Some(stop_reason),
+                    None,
+                );
                 return;
             }
             RunUpdate::Failed { error } => {
@@ -557,7 +828,14 @@ async fn drain_updates(
                 runs.remove(&run_id);
                 drop(buffers);
                 drop(runs);
-                write_terminal_status(&db_path, &run_id, "failed", None, None, Some(error));
+                write_terminal_status(
+                    &db_path,
+                    &run_id,
+                    "failed",
+                    output.as_deref(),
+                    None,
+                    Some(error),
+                );
                 return;
             }
             RunUpdate::Cancelled => {
@@ -565,7 +843,14 @@ async fn drain_updates(
                 runs.remove(&run_id);
                 drop(buffers);
                 drop(runs);
-                write_terminal_status(&db_path, &run_id, "cancelled", None, Some("user_cancelled"), None);
+                write_terminal_status(
+                    &db_path,
+                    &run_id,
+                    "cancelled",
+                    output.as_deref(),
+                    Some("user_cancelled"),
+                    None,
+                );
                 return;
             }
             _ => {}
@@ -574,14 +859,25 @@ async fn drain_updates(
     // Channel closed (handle dropped mid-stream) — mark as failed (decision 47).
     let mut buffers = buffers.lock().await;
     if let Some(buf) = buffers.get_mut(&run_id) {
-        if !buf.updates.iter().any(|u| matches!(u, RunUpdate::Completed { .. } | RunUpdate::Failed { .. } | RunUpdate::Cancelled)) {
+        let already_terminal = buf.updates.iter().any(|u| {
+            matches!(
+                u,
+                RunUpdate::Completed { .. } | RunUpdate::Failed { .. } | RunUpdate::Cancelled
+            )
+        });
+        if !already_terminal {
+            let output = buf.output.clone();
             buf.updates.push(RunUpdate::Failed {
                 error: "drain: channel closed".to_string(),
             });
             buf.dirty = true;
             drop(buffers);
             write_terminal_status(
-                &db_path, &run_id, "failed", None, None,
+                &db_path,
+                &run_id,
+                "failed",
+                Some(&output),
+                None,
                 Some("drain: channel closed"),
             );
         }
@@ -605,7 +901,13 @@ fn write_terminal_status(
         Ok(conn) => {
             let now = crate::db::now_iso();
             if let Err(e) = agent_runs::update_status(
-                &conn, run_id, status, output, stop_reason, error, Some(&now),
+                &conn,
+                run_id,
+                status,
+                output,
+                stop_reason,
+                error,
+                Some(&now),
             ) {
                 eprintln!("drain: failed to write terminal status for run {run_id}: {e}");
             }
@@ -620,8 +922,8 @@ fn write_terminal_status(
 // Tauri state + commands
 // ---------------------------------------------------------------------------
 
-use tauri::{AppHandle, Manager, State};
 use crate::db::open_db;
+use tauri::{AppHandle, Manager, State};
 
 /// Tauri-managed state holding the run executor.
 pub struct RunnerState {
@@ -630,7 +932,9 @@ pub struct RunnerState {
 
 impl Default for RunnerState {
     fn default() -> Self {
-        Self { core: RunCore::new() }
+        Self {
+            core: RunCore::new(),
+        }
     }
 }
 
@@ -643,6 +947,7 @@ pub async fn acp_create_run(
     agent_name: String,
     skill_names: Option<Vec<String>>,
 ) -> Result<agent_runs::AgentRun, AcpError> {
+    eprintln!("[acp_create_run] card={card_id} agent={agent_name} skills={skill_names:?}");
     // All DB work synchronously (no await — Connection is not Send).
     let (run_id, repo_path, prompt, acp_agent, db_path) = {
         let conn = open_db(&app)?;
@@ -650,8 +955,11 @@ pub async fn acp_create_run(
         let agent = agents::get_agent(&conn, &agent_name)?
             .ok_or_else(|| AcpError::not_found(format!("Agent '{agent_name}' not found")))?;
         if !agent.enabled {
-            return Err(AcpError::validation(format!("Agent '{agent_name}' is disabled")));
+            return Err(AcpError::validation(format!(
+                "Agent '{agent_name}' is disabled"
+            )));
         }
+        eprintln!("[acp_create_run] step1 agent loaded: built_in={} command={}", agent.built_in, agent.command);
         // Step 2: Check lock.
         if agent_runs::is_card_locked(&conn, &card_id) {
             return Err(AcpError::locked(format!(
@@ -661,29 +969,31 @@ pub async fn acp_create_run(
         // Step 3: Load card.
         let card = cards::get_card_by_id(&conn, &card_id)?
             .ok_or_else(|| AcpError::not_found(format!("Card '{card_id}' not found")))?;
+        eprintln!("[acp_create_run] step3 card loaded: title={}", card.title);
         // Step 3b: Resolve repo_path — explicit repo_path > tree_source path.
-        let repo_path = match card.repo_path.as_ref() {
-            Some(p) if !p.is_empty() => p.clone(),
-            _ => match card.tree_source_id.as_ref() {
-                Some(tid) => crate::db::settings::get_tree_source_path(&conn, tid)?
-                    .ok_or_else(|| AcpError::validation(format!(
-                        "Card '{card_id}' tree source '{tid}' no longer exists."
-                    )))?,
-                None => return Err(AcpError::validation(format!(
-                    "Card '{card_id}' has no repo_path or tree_source_id set."
-                ))),
-            },
-        };
-        // Step 5: Build AcpAgent.
+        let repo_path = cards::resolve_repo_path(&conn, &card)?;
+        eprintln!("[acp_create_run] step3b repo_path={repo_path}");
+        // Step 5: Build AcpAgent. Attach a debug callback that dumps every
+        // stdio line to stderr so spawn/handshake failures are visible.
         let acp_agent = if agent.built_in && agent_name == "claude-code" {
             agent_client_protocol::AcpAgent::claude_agent()
         } else {
             agent_client_protocol::AcpAgent::from_str(&agent.command)
                 .map_err(|e| AcpError::internal(format!("Invalid agent command: {e}")))?
         };
+        let debug_agent_name = agent_name.clone();
+        let acp_agent = acp_agent.with_debug(move |line, dir| {
+            eprintln!("[acp-stdio:{debug_agent_name}:{dir:?}] {line}");
+        });
+        eprintln!("[acp_create_run] step5 acp_agent built");
         // Step 6: Load skills.
         let sn: Vec<String> = match &skill_names {
-            Some(names) => agent.skills.iter().filter(|s| names.contains(s)).cloned().collect(),
+            Some(names) => agent
+                .skills
+                .iter()
+                .filter(|s| names.contains(s))
+                .cloned()
+                .collect(),
             None => agent.skills.clone(),
         };
         let loaded = skills::load_skills(&sn);
@@ -703,8 +1013,14 @@ pub async fn acp_create_run(
         // The real values are filled in after create_run creates the worktree.
         let run_id = uuid::Uuid::new_v4().to_string();
         agent_runs::insert_run(
-            &conn, &run_id, &card_id, &agent_name,
-            "/tmp/pending", "agent/pending", "pending", &sn,
+            &conn,
+            &run_id,
+            &card_id,
+            &agent_name,
+            "/tmp/pending",
+            "agent/pending",
+            "pending",
+            &sn,
         )?;
         // Resolve the DB path so the drain task can open its own connection.
         let mut db_path = app
@@ -712,25 +1028,43 @@ pub async fn acp_create_run(
             .app_config_dir()
             .map_err(|e| AcpError::internal(format!("app_config_dir: {e}")))?;
         db_path.push("tasker.db");
+        eprintln!("[acp_create_run] step8 run_id={run_id} db_path={}", db_path.display());
         (run_id, repo_path, prompt, acp_agent, db_path)
     };
     // conn dropped here — safe to await.
+    eprintln!("[acp_create_run] calling create_run: repo_path={repo_path} prompt_len={}", prompt.len());
 
     // Steps 4, 9-11: Worktree + SDK spawn (async).
     // On error, mark the row failed so the card lock releases; the drain task
     // never started, so nothing else will write terminal state.
     let create_result = state
         .core
-        .create_run(run_id.clone(), card_id, repo_path, prompt, acp_agent, db_path.clone())
+        .create_run(
+            run_id.clone(),
+            card_id,
+            repo_path.clone(),
+            prompt,
+            acp_agent,
+            db_path.clone(),
+        )
         .await;
     let (worktree_path, branch) = match create_result {
-        Ok(v) => v,
+        Ok(v) => {
+            eprintln!("[acp_create_run] create_run ok: worktree={} branch={}", v.0, v.1);
+            v
+        }
         Err(e) => {
+            eprintln!("[acp_create_run] create_run FAILED: {e}");
             let conn = open_db(&app)?;
             let err_msg = e.to_string();
             agent_runs::update_status(
-                &conn, &run_id, "failed", None, None,
-                Some(&err_msg), Some(&crate::db::now_iso()),
+                &conn,
+                &run_id,
+                "failed",
+                None,
+                None,
+                Some(&err_msg),
+                Some(&crate::db::now_iso()),
             )?;
             return Err(e);
         }
@@ -739,7 +1073,8 @@ pub async fn acp_create_run(
     // Update worktree_path/branch/status now that the worktree exists.
     {
         let conn = open_db(&app)?;
-        agent_runs::update_worktree_branch(&conn, &run_id, &worktree_path, &branch, "running")?;
+        agent_runs::set_worktree_info(&conn, &run_id, &worktree_path, &branch, &repo_path)?;
+        agent_runs::update_status(&conn, &run_id, "running", None, None, None, None)?;
     }
 
     // Step 12: Read back the run row.
@@ -811,7 +1146,12 @@ pub async fn acp_cancel_run(
     // Update DB to cancelled.
     let conn = open_db(&app)?;
     agent_runs::update_status(
-        &conn, &run_id, "cancelled", None, Some("user_cancelled"), None,
+        &conn,
+        &run_id,
+        "cancelled",
+        None,
+        Some("user_cancelled"),
+        None,
         Some(&crate::db::now_iso()),
     )
 }
@@ -826,6 +1166,16 @@ pub async fn acp_respond_permission(
     approved: bool,
 ) -> Result<(), AcpError> {
     state.core.respond_permission(&request_id, approved).await
+}
+
+/// Send a follow-up prompt to a running agent that is waiting for user input.
+#[tauri::command]
+pub async fn acp_send_followup(
+    state: State<'_, RunnerState>,
+    run_id: String,
+    text: String,
+) -> Result<(), AcpError> {
+    state.core.send_followup(&run_id, text).await
 }
 
 /// List all registered agents.
@@ -852,11 +1202,13 @@ pub async fn acp_register_agent(
     }
     if name == "claude-code" {
         return Err(AcpError::validation(
-            "Agent name 'claude-code' is reserved for the built-in agent"
+            "Agent name 'claude-code' is reserved for the built-in agent",
         ));
     }
     if command.is_empty() {
-        return Err(AcpError::validation("Agent command cannot be empty for non-built-in agents"));
+        return Err(AcpError::validation(
+            "Agent command cannot be empty for non-built-in agents",
+        ));
     }
     let conn = open_db(&app)?;
     agents::insert_agent(&conn, &name, &command, &description, false, true, &skills)
@@ -886,7 +1238,10 @@ pub async fn acp_update_agent(
 
 /// Delete an agent. Refuses built-in agents outright. For non-built-ins,
 /// RESTRICT by default (returns the structured `AgentHasRuns` error if
-/// runs exist); cascade with `delete_runs=true`.
+/// runs exist); cascade with `delete_runs=true`. On cascade, removes each
+/// run's worktree (dir + branch) before deleting the run rows, so the
+/// `.tasker-worktrees/<card_id>` dirs and `agent/<card_id>` branches don't
+/// get orphaned on disk.
 #[tauri::command]
 pub async fn acp_delete_agent(
     app: AppHandle,
@@ -903,6 +1258,18 @@ pub async fn acp_delete_agent(
     }
     if !delete_runs && agent_runs::count_runs_for_agent(&conn, &name)? > 0 {
         return Err(AcpError::agent_has_runs(&name));
+    }
+    // On cascade, reap worktrees first (best-effort — a missing repo_root
+    // or a failed `git worktree remove` must not block the DB delete).
+    if delete_runs {
+        let runs = agent_runs::list_runs_for_agent(&conn, &name)?;
+        for r in &runs {
+            if let Some(repo) = r.repo_root.as_ref() {
+                let _ = WorktreeManager::new(&PathBuf::from(repo))
+                    .remove(&r.card_id)
+                    .await;
+            }
+        }
     }
     agents::delete_agent(&conn, &name, delete_runs)
 }
@@ -951,21 +1318,32 @@ pub async fn acp_cleanup(app: AppHandle) -> Result<Vec<String>, AcpError> {
 
 /// Diff between main and the agent branch for a card.
 #[tauri::command]
-pub async fn acp_diff_main(
-    app: AppHandle,
-    card_id: String,
-) -> Result<DiffResult, AcpError> {
+pub async fn acp_diff_main(app: AppHandle, card_id: String) -> Result<DiffResult, AcpError> {
     let diff = {
         let conn = open_db(&app)?;
-        let card = cards::get_card_by_id(&conn, &card_id)?
-            .ok_or_else(|| AcpError::not_found(format!("Card '{card_id}' not found")))?;
-        let repo = card.repo_path.clone()
-            .ok_or_else(|| AcpError::validation("Card has no repo_path"))?;
-        let wt_mgr = WorktreeManager::new(&PathBuf::from(&repo));
+        let run = agent_runs::get_active_run(&conn, &card_id)?
+            .or(agent_runs::get_latest_run_for_card(&conn, &card_id)?)
+            .ok_or_else(|| AcpError::not_found("No run found for card"))?;
+        let repo_root = run.repo_root.as_ref().ok_or_else(|| {
+            AcpError::validation(
+                "Run has no repo_root (may be a pre-migration run without a repo path)",
+            )
+        })?;
+        let wt_mgr = WorktreeManager::new(&PathBuf::from(repo_root));
         wt_mgr.diff_main(&card_id).await?
     };
     let truncated = diff.len() > 1024 * 1024;
-    let text = if truncated { diff[..1024 * 1024].to_string() } else { diff };
+    let text = if truncated {
+        // Floor to the nearest char boundary at or before 1MB to avoid
+        // panicking on multi-byte UTF-8 at the slice edge.
+        let mut end = 1024 * 1024;
+        while !diff.is_char_boundary(end) {
+            end -= 1;
+        }
+        diff[..end].to_string()
+    } else {
+        diff
+    };
     Ok(DiffResult { text, truncated })
 }
 
@@ -988,27 +1366,25 @@ pub async fn acp_merge(
     let (repo_path, run_id) = {
         let conn = open_db(&app)?;
         // Look for active run first, then most recent run of any status.
-        let run = agent_runs::get_active_run(&conn, &card_id)?;
-        let (run_id, status) = if let Some(r) = run {
-            (r.id, r.status)
-        } else {
-            // No active run — look for the most recent run.
-            conn.query_row(
-                "SELECT id, status FROM agent_runs WHERE card_id = ?1 ORDER BY created_at DESC LIMIT 1",
-                rusqlite::params![card_id],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-            ).map_err(|_| AcpError::not_found("No run found for card"))?
-        };
+        let run = agent_runs::get_active_run(&conn, &card_id)?
+            .or(agent_runs::get_latest_run_for_card(&conn, &card_id)?)
+            .ok_or_else(|| AcpError::not_found("No run found for card"))?;
+        let (run_id, status) = (run.id, run.status);
         let force = force.unwrap_or(false);
         if status != "completed" && !force {
             return Err(AcpError::validation(format!(
                 "Run status is '{status}', must be 'completed' (or use force=true)"
             )));
         }
-        let card = cards::get_card_by_id(&conn, &card_id)?
-            .ok_or_else(|| AcpError::not_found(format!("Card '{card_id}' not found")))?;
-        let repo = card.repo_path.clone()
-            .ok_or_else(|| AcpError::validation("Card has no repo_path"))?;
+        let repo = run
+            .repo_root
+            .as_ref()
+            .ok_or_else(|| {
+                AcpError::validation(
+                    "Run has no repo_root (may be a pre-migration run without a repo path)",
+                )
+            })?
+            .clone();
         (repo, run_id)
     };
     let wt_mgr = WorktreeManager::new(&PathBuf::from(&repo_path));
@@ -1020,21 +1396,62 @@ pub async fn acp_merge(
     Ok(result)
 }
 
-/// Remove the worktree for a card.
+/// Remove the worktree for a card. Resolves the repo root from the
+/// active/most-recent run's `repo_root` when a run row exists; falls back
+/// to the card's `tree_source_id` → `tree_sources.path` when no run row
+/// remains (e.g. after an agent cascade-delete orphaned the worktree).
 #[tauri::command]
-pub async fn acp_remove_worktree(
-    app: AppHandle,
-    card_id: String,
-) -> Result<(), AcpError> {
+pub async fn acp_remove_worktree(app: AppHandle, card_id: String) -> Result<(), AcpError> {
     let repo_path = {
         let conn = open_db(&app)?;
-        let card = cards::get_card_by_id(&conn, &card_id)?
-            .ok_or_else(|| AcpError::not_found(format!("Card '{card_id}' not found")))?;
-        card.repo_path.clone()
-            .ok_or_else(|| AcpError::validation("Card has no repo_path"))?
+        // Prefer a run row's snapshotted repo_root (deterministic, survives
+        // tree_source edits). Fall back to the card's tree_source path so
+        // orphaned worktrees can be cleaned even after run rows are gone.
+        if let Some(run) = agent_runs::get_active_run(&conn, &card_id)?
+            .or(agent_runs::get_latest_run_for_card(&conn, &card_id)?)
+        {
+            if let Some(repo) = run.repo_root {
+                repo
+            } else {
+                return Err(AcpError::validation(
+                    "Run has no repo_root (may be a pre-migration run without a repo path)",
+                ));
+            }
+        } else {
+            let card = cards::get_card_by_id(&conn, &card_id)?
+                .ok_or_else(|| AcpError::not_found(format!("Card '{card_id}' not found")))?;
+            cards::resolve_repo_path(&conn, &card)?
+        }
     };
     let wt_mgr = WorktreeManager::new(&PathBuf::from(&repo_path));
     wt_mgr.remove(&card_id).await
+}
+
+/// Delete an agent run and its worktree. Refuses to delete active runs
+/// (pending/running) to avoid leaving an agent process detached. For terminal
+/// runs, removes the worktree (best-effort) then deletes the DB row.
+#[tauri::command]
+pub async fn acp_delete_run(app: AppHandle, run_id: String) -> Result<(), AcpError> {
+    let (card_id, repo_root) = {
+        let conn = open_db(&app)?;
+        let run = agent_runs::get_run(&conn, &run_id)?
+            .ok_or_else(|| AcpError::not_found(format!("Run '{run_id}' not found")))?;
+        if run.status == "pending" || run.status == "running" {
+            return Err(AcpError::locked(format!(
+                "Cannot delete active run '{run_id}' (status: {}). Cancel it first.",
+                run.status
+            )));
+        }
+        (run.card_id, run.repo_root)
+    };
+    // Remove worktree outside the DB lock (best-effort).
+    if let Some(repo) = repo_root {
+        let _ = WorktreeManager::new(&PathBuf::from(&repo))
+            .remove(&card_id)
+            .await;
+    }
+    let conn = open_db(&app)?;
+    agent_runs::delete_run(&conn, &run_id)
 }
 
 /// Mark stale active runs as failed and release locks.
@@ -1060,16 +1477,16 @@ pub fn cleanup_dangling(conn: &rusqlite::Connection) -> Result<Vec<String>, AcpE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::test_db;
     use crate::db::agent_runs;
     use crate::db::agents;
+    use crate::db::test_db;
     use crate::db::{open_db_path, run_migrations};
 
-    fn insert_test_card(conn: &rusqlite::Connection, id: &str, repo_path: Option<&str>) {
+    fn insert_test_card(conn: &rusqlite::Connection, id: &str) {
         conn.execute(
-            r#"INSERT INTO cards (id, title, description, priority, "column", source, position, repo_path, created_at, updated_at)
-               VALUES (?1, 'Test', 'desc', 'medium', 'backlog', 'local', 0, ?2, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
-            rusqlite::params![id, repo_path],
+            r#"INSERT INTO cards (id, title, description, priority, "column", source, position, created_at, updated_at)
+               VALUES (?1, 'Test', 'desc', 'medium', 'backlog', 'local', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
+            rusqlite::params![id],
         ).unwrap();
     }
 
@@ -1089,16 +1506,32 @@ mod tests {
     async fn drain_writes_completed_status_to_db() {
         let db_path = temp_file_db();
         let conn = open_db_path(&db_path).unwrap();
-        insert_test_card(&conn, "c-1", Some("/tmp/repo"));
+        insert_test_card(&conn, "c-1");
         agents::insert_agent(&conn, "my-agent", "echo hi", "Test", false, true, &[]).unwrap();
-        agent_runs::insert_run(&conn, "r-1", "c-1", "my-agent", "/tmp/wt", "agent/c-1", "running", &[]).unwrap();
+        agent_runs::insert_run(
+            &conn,
+            "r-1",
+            "c-1",
+            "my-agent",
+            "/tmp/wt",
+            "agent/c-1",
+            "running",
+            &[],
+        )
+        .unwrap();
         drop(conn);
 
         let (tx, rx) = mpsc::unbounded_channel::<RunUpdate>();
         let buffers = Arc::new(Mutex::new(HashMap::new()));
-        buffers.lock().await.insert("r-1".to_string(), UpdateBuffer::new());
+        buffers
+            .lock()
+            .await
+            .insert("r-1".to_string(), UpdateBuffer::new());
         let runs = Arc::new(Mutex::new(HashMap::new()));
-        let _ = tx.send(RunUpdate::Completed { output: "done".into(), stop_reason: "end_turn".into() });
+        let _ = tx.send(RunUpdate::Completed {
+            output: "done".into(),
+            stop_reason: "end_turn".into(),
+        });
         drop(tx);
         drain_updates(rx, buffers, runs, "r-1".to_string(), db_path.clone()).await;
 
@@ -1114,14 +1547,27 @@ mod tests {
     async fn drain_writes_failed_status_on_channel_close() {
         let db_path = temp_file_db();
         let conn = open_db_path(&db_path).unwrap();
-        insert_test_card(&conn, "c-2", Some("/tmp/repo"));
+        insert_test_card(&conn, "c-2");
         agents::insert_agent(&conn, "my-agent", "echo hi", "Test", false, true, &[]).unwrap();
-        agent_runs::insert_run(&conn, "r-2", "c-2", "my-agent", "/tmp/wt", "agent/c-2", "running", &[]).unwrap();
+        agent_runs::insert_run(
+            &conn,
+            "r-2",
+            "c-2",
+            "my-agent",
+            "/tmp/wt",
+            "agent/c-2",
+            "running",
+            &[],
+        )
+        .unwrap();
         drop(conn);
 
         let (tx, rx) = mpsc::unbounded_channel::<RunUpdate>();
         let buffers = Arc::new(Mutex::new(HashMap::new()));
-        buffers.lock().await.insert("r-2".to_string(), UpdateBuffer::new());
+        buffers
+            .lock()
+            .await
+            .insert("r-2".to_string(), UpdateBuffer::new());
         let runs = Arc::new(Mutex::new(HashMap::new()));
         // Drop the sender without sending a terminal update — drain should
         // fall back to the channel-closed path and write `failed`.
@@ -1139,14 +1585,27 @@ mod tests {
     async fn cancel_run_emits_cancelled_and_writes_db() {
         let db_path = temp_file_db();
         let conn = open_db_path(&db_path).unwrap();
-        insert_test_card(&conn, "c-3", Some("/tmp/repo"));
+        insert_test_card(&conn, "c-3");
         agents::insert_agent(&conn, "my-agent", "echo hi", "Test", false, true, &[]).unwrap();
-        agent_runs::insert_run(&conn, "r-3", "c-3", "my-agent", "/tmp/wt", "agent/c-3", "running", &[]).unwrap();
+        agent_runs::insert_run(
+            &conn,
+            "r-3",
+            "c-3",
+            "my-agent",
+            "/tmp/wt",
+            "agent/c-3",
+            "running",
+            &[],
+        )
+        .unwrap();
         drop(conn);
 
         let (tx, rx) = mpsc::unbounded_channel::<RunUpdate>();
         let buffers = Arc::new(Mutex::new(HashMap::new()));
-        buffers.lock().await.insert("r-3".to_string(), UpdateBuffer::new());
+        buffers
+            .lock()
+            .await
+            .insert("r-3".to_string(), UpdateBuffer::new());
         let runs = Arc::new(Mutex::new(HashMap::new()));
         let _ = tx.send(RunUpdate::Cancelled);
         drop(tx);
@@ -1164,48 +1623,101 @@ mod tests {
         // Simulate the acp_create_run error path: insert a placeholder row,
         // then mark it failed (as the command does when create_run errors).
         let conn = test_db();
-        insert_test_card(&conn, "c-4", Some("/tmp/repo"));
+        insert_test_card(&conn, "c-4");
         agents::insert_agent(&conn, "my-agent", "echo hi", "Test", false, true, &[]).unwrap();
-        agent_runs::insert_run(&conn, "r-4", "c-4", "my-agent", "/tmp/pending", "agent/pending", "pending", &[]).unwrap();
+        agent_runs::insert_run(
+            &conn,
+            "r-4",
+            "c-4",
+            "my-agent",
+            "/tmp/pending",
+            "agent/pending",
+            "pending",
+            &[],
+        )
+        .unwrap();
         assert!(agent_runs::is_card_locked(&conn, "c-4"));
         // Mirror the error path in acp_create_run.
         agent_runs::update_status(
-            &conn, "r-4", "failed", None, None,
+            &conn,
+            "r-4",
+            "failed",
+            None,
+            None,
             Some("worktree create failed: no git repo"),
             Some(&crate::db::now_iso()),
-        ).unwrap();
+        )
+        .unwrap();
         assert!(!agent_runs::is_card_locked(&conn, "c-4"));
         let run = agent_runs::get_run(&conn, "r-4").unwrap().unwrap();
         assert_eq!(run.status, "failed");
-        assert_eq!(run.error.as_deref(), Some("worktree create failed: no git repo"));
+        assert_eq!(
+            run.error.as_deref(),
+            Some("worktree create failed: no git repo")
+        );
     }
 
     #[test]
     fn latest_run_for_card_returns_most_recent() {
         let conn = test_db();
-        insert_test_card(&conn, "c-5", Some("/tmp/repo"));
+        insert_test_card(&conn, "c-5");
         agents::insert_agent(&conn, "my-agent", "echo hi", "Test", false, true, &[]).unwrap();
-        agent_runs::insert_run(&conn, "r-old", "c-5", "my-agent", "/tmp/wt1", "agent/c-5", "completed", &[]).unwrap();
+        agent_runs::insert_run(
+            &conn,
+            "r-old",
+            "c-5",
+            "my-agent",
+            "/tmp/wt1",
+            "agent/c-5",
+            "completed",
+            &[],
+        )
+        .unwrap();
         // Tiny delay so created_at differs; insert_run uses now_iso() per row.
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        agent_runs::insert_run(&conn, "r-new", "c-5", "my-agent", "/tmp/wt2", "agent/c-5", "running", &[]).unwrap();
-        let latest = agent_runs::get_latest_run_for_card(&conn, "c-5").unwrap().unwrap();
+        agent_runs::insert_run(
+            &conn,
+            "r-new",
+            "c-5",
+            "my-agent",
+            "/tmp/wt2",
+            "agent/c-5",
+            "running",
+            &[],
+        )
+        .unwrap();
+        let latest = agent_runs::get_latest_run_for_card(&conn, "c-5")
+            .unwrap()
+            .unwrap();
         assert_eq!(latest.id, "r-new");
     }
 
     #[test]
     fn cleanup_dangling_marks_active_as_failed() {
         let conn = test_db();
-        insert_test_card(&conn, "c-1", Some("/tmp/repo"));
+        insert_test_card(&conn, "c-1");
         agents::insert_agent(&conn, "my-agent", "echo hi", "Test", false, true, &[]).unwrap();
-        agent_runs::insert_run(&conn, "r-1", "c-1", "my-agent", "/tmp/wt", "agent/c-1", "running", &[]).unwrap();
+        agent_runs::insert_run(
+            &conn,
+            "r-1",
+            "c-1",
+            "my-agent",
+            "/tmp/wt",
+            "agent/c-1",
+            "running",
+            &[],
+        )
+        .unwrap();
         assert!(agent_runs::is_card_locked(&conn, "c-1"));
         let reaped = cleanup_dangling(&conn).unwrap();
         assert_eq!(reaped, vec!["r-1"]);
         assert!(!agent_runs::is_card_locked(&conn, "c-1"));
         let run = agent_runs::get_run(&conn, "r-1").unwrap().unwrap();
         assert_eq!(run.status, "failed");
-        assert_eq!(run.error.as_deref(), Some("dangling: tasker restarted while run was active"));
+        assert_eq!(
+            run.error.as_deref(),
+            Some("dangling: tasker restarted while run was active")
+        );
     }
 
     #[test]
@@ -1284,10 +1796,44 @@ mod tests {
     }
 
     #[test]
-    fn summarize_tool_call_truncates_long_args() {
+    fn pick_allow_option_reject_only_returns_allow_literal_not_first() {
+        // ponytail: regression for the bug where a Reject-only option list
+        // caused "approve" to send the first (Reject) option. Now returns
+        // the literal "allow" id so the agent errors clearly.
         use agent_client_protocol::schema::v1::{
-            ToolCallUpdate, ToolCallUpdateFields,
+            PermissionOption, PermissionOptionId, PermissionOptionKind,
         };
+        let reject = PermissionOption::new(
+            PermissionOptionId::new("deny"),
+            "Permit always",
+            PermissionOptionKind::RejectAlways,
+        );
+        let picked = pick_allow_option(&[reject]);
+        assert_eq!(picked.0.as_ref(), "allow");
+    }
+
+    #[test]
+    fn pick_allow_option_prefers_allow_once_over_allow_always() {
+        use agent_client_protocol::schema::v1::{
+            PermissionOption, PermissionOptionId, PermissionOptionKind,
+        };
+        let always = PermissionOption::new(
+            PermissionOptionId::new("always"),
+            "Allow always",
+            PermissionOptionKind::AllowAlways,
+        );
+        let once = PermissionOption::new(
+            PermissionOptionId::new("once"),
+            "Allow once",
+            PermissionOptionKind::AllowOnce,
+        );
+        let picked = pick_allow_option(&[always, once]);
+        assert_eq!(picked.0.as_ref(), "once");
+    }
+
+    #[test]
+    fn summarize_tool_call_truncates_long_args() {
+        use agent_client_protocol::schema::v1::{ToolCallUpdate, ToolCallUpdateFields};
         let long = "x".repeat(600);
         let tc = ToolCallUpdate::new(
             agent_client_protocol::schema::v1::ToolCallId::new("tc-1"),
@@ -1304,9 +1850,7 @@ mod tests {
 
     #[test]
     fn summarize_tool_call_uses_title_when_no_args() {
-        use agent_client_protocol::schema::v1::{
-            ToolCallUpdate, ToolCallUpdateFields,
-        };
+        use agent_client_protocol::schema::v1::{ToolCallUpdate, ToolCallUpdateFields};
         let tc = ToolCallUpdate::new(
             agent_client_protocol::schema::v1::ToolCallId::new("tc-2"),
             ToolCallUpdateFields::new().title("Read"),
@@ -1318,9 +1862,8 @@ mod tests {
     fn register_claude_code_name_rejected() {
         // The built-in name is reserved; re-registering must fail before
         // touching the DB. We exercise the validation guard directly.
-        let err = AcpError::validation(
-            "Agent name 'claude-code' is reserved for the built-in agent"
-        );
+        let err =
+            AcpError::validation("Agent name 'claude-code' is reserved for the built-in agent");
         assert_eq!(err.code, crate::error::AcpErrorCode::Validation);
         assert!(err.message.contains("claude-code"));
     }
@@ -1335,7 +1878,9 @@ mod tests {
         assert!(agent.built_in);
         // Mirror the acp_delete_agent built-in guard.
         let err = if agent.built_in {
-            Err(AcpError::validation("Cannot delete built-in agent 'claude-code'"))
+            Err(AcpError::validation(
+                "Cannot delete built-in agent 'claude-code'",
+            ))
         } else {
             Ok(())
         };
@@ -1345,9 +1890,19 @@ mod tests {
     #[test]
     fn delete_agent_returns_agent_has_runs_when_runs_exist() {
         let conn = test_db();
-        insert_test_card(&conn, "c-dr", Some("/tmp/repo"));
+        insert_test_card(&conn, "c-dr");
         agents::insert_agent(&conn, "my-agent", "echo hi", "Test", false, true, &[]).unwrap();
-        agent_runs::insert_run(&conn, "r-dr", "c-dr", "my-agent", "/tmp/wt", "agent/c-dr", "running", &[]).unwrap();
+        agent_runs::insert_run(
+            &conn,
+            "r-dr",
+            "c-dr",
+            "my-agent",
+            "/tmp/wt",
+            "agent/c-dr",
+            "running",
+            &[],
+        )
+        .unwrap();
         // Mirror the acp_delete_agent runs-exist guard.
         let count = agent_runs::count_runs_for_agent(&conn, "my-agent").unwrap();
         assert_eq!(count, 1);
@@ -1366,27 +1921,53 @@ mod tests {
         // stop reason or the channel closes.
         let db_path = temp_file_db();
         let conn = open_db_path(&db_path).unwrap();
-        insert_test_card(&conn, "c-to", Some("/tmp/repo"));
+        insert_test_card(&conn, "c-to");
         agents::insert_agent(&conn, "my-agent", "echo hi", "Test", false, true, &[]).unwrap();
-        agent_runs::insert_run(&conn, "r-to", "c-to", "my-agent", "/tmp/wt", "agent/c-to", "running", &[]).unwrap();
+        agent_runs::insert_run(
+            &conn,
+            "r-to",
+            "c-to",
+            "my-agent",
+            "/tmp/wt",
+            "agent/c-to",
+            "running",
+            &[],
+        )
+        .unwrap();
         drop(conn);
 
         let (tx, rx) = mpsc::unbounded_channel::<RunUpdate>();
         let buffers = Arc::new(Mutex::new(HashMap::new()));
-        buffers.lock().await.insert("r-to".to_string(), UpdateBuffer::new());
+        buffers
+            .lock()
+            .await
+            .insert("r-to".to_string(), UpdateBuffer::new());
         let runs = Arc::new(Mutex::new(HashMap::new()));
         let _ = tx.send(RunUpdate::PermissionTimeout);
         // Then a normal completion — the run should still terminate.
-        let _ = tx.send(RunUpdate::Completed { output: "done".into(), stop_reason: "end_turn".into() });
+        let _ = tx.send(RunUpdate::Completed {
+            output: "done".into(),
+            stop_reason: "end_turn".into(),
+        });
         drop(tx);
-        drain_updates(rx, buffers.clone(), runs, "r-to".to_string(), db_path.clone()).await;
+        drain_updates(
+            rx,
+            buffers.clone(),
+            runs,
+            "r-to".to_string(),
+            db_path.clone(),
+        )
+        .await;
 
         let conn = open_db_path(&db_path).unwrap();
         let run = agent_runs::get_run(&conn, "r-to").unwrap().unwrap();
         assert_eq!(run.status, "completed");
         let buf = buffers.lock().await;
         let updates = buf.get("r-to").unwrap();
-        assert!(updates.updates.iter().any(|u| matches!(u, RunUpdate::PermissionTimeout)));
+        assert!(updates
+            .updates
+            .iter()
+            .any(|u| matches!(u, RunUpdate::PermissionTimeout)));
     }
 
     // -------------------------------------------------------------------
@@ -1442,6 +2023,20 @@ mod tests {
         agent_client_protocol::AcpAgent::new(cfg)
     }
 
+    /// Mock that emits 3 chunks sharing one messageId — a single multi-chunk
+    /// agent message — to exercise chunk coalescing.
+    fn mock_acp_agent_coalesced() -> agent_client_protocol::AcpAgent {
+        use agent_client_protocol::AcpAgentConfig;
+        agent_client_protocol::AcpAgent::new(
+            AcpAgentConfig::new(std::env::current_exe().unwrap())
+                .arg("mock_acp_server")
+                .arg("--nocapture")
+                .env("MOCK_ACP_BINARY", "1")
+                .env("MOCK_ACP_UPDATES", "3")
+                .env("MOCK_ACP_SAME_MSG", "1"),
+        )
+    }
+
     /// Like `mock_acp_agent(true)` but also tells the mock to write its PID
     /// to `pid_file` — used by the hard-kill test to verify the SDK's
     /// `ChildGuard` SIGKILL's the process group after cancel.
@@ -1484,8 +2079,34 @@ mod tests {
         }
     }
 
+    /// Wait for `WaitingForInput` to appear in the buffer.
+    async fn wait_waiting_for_input(core: &RunCore, run_id: &str) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let has = {
+                let buf = core.buffers.lock().await;
+                buf.get(run_id)
+                    .map(|b| {
+                        b.updates.iter().any(|u| {
+                            matches!(u, RunUpdate::WaitingForInput { .. })
+                        })
+                    })
+                    .unwrap_or(false)
+            };
+            if has {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for WaitingForInput"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+    }
+
     /// End-to-end: real git worktree + real spawned mock ACP process →
-    /// streamed text update → drain writes `completed` to the DB.
+    /// streamed text update → agent stops with EndTurn → WaitingForInput
+    /// → cancel → drain writes `cancelled` to the DB.
     #[tokio::test]
     async fn mock_agent_full_lifecycle_writes_completed() {
         let db_path = temp_file_db();
@@ -1495,7 +2116,7 @@ mod tests {
         // then create_run fills in the real worktree path + branch.
         {
             let conn = open_db_path(&db_path).unwrap();
-            insert_test_card(&conn, "card-1", Some(repo.to_str().unwrap()));
+            insert_test_card(&conn, "card-1");
             agents::insert_agent(&conn, "tester", "echo hi", "Test", false, true, &[]).unwrap();
             agent_runs::insert_run(
                 &conn,
@@ -1523,6 +2144,11 @@ mod tests {
         assert!(PathBuf::from(&wt_path).exists(), "worktree should exist");
         assert!(branch.starts_with("agent/"), "branch prefix");
 
+        // Wait for WaitingForInput (agent sent StopReason), then cancel
+        // since the test has no interactive follow-up to send.
+        wait_waiting_for_input(&core, "run-mock-1").await;
+        core.cancel_run("run-mock-1").await;
+
         let updates = wait_terminal(&core, "run-mock-1").await;
         assert!(
             updates
@@ -1531,14 +2157,76 @@ mod tests {
             "expected streamed text, got: {updates:?}"
         );
         assert!(
-            updates.iter().any(|u| matches!(u, RunUpdate::Completed { .. })),
-            "expected Completed, got: {updates:?}"
+            updates
+                .iter()
+                .any(|u| matches!(u, RunUpdate::Cancelled)),
+            "expected Cancelled, got: {updates:?}"
         );
 
         let conn = open_db_path(&db_path).unwrap();
         let run = agent_runs::get_run(&conn, "run-mock-1").unwrap().unwrap();
-        assert_eq!(run.status, "completed");
+        assert_eq!(run.status, "cancelled");
         // Cleanup the worktree so the test leaves no litter.
+        let _ = std::process::Command::new("git")
+            .args(["worktree", "remove", "--force"])
+            .arg(&wt_path)
+            .current_dir(&repo)
+            .output();
+    }
+
+    /// Chunks sharing a messageId are ONE agent message: they must arrive in
+    /// the buffer as a single coalesced SessionUpdate, not one per chunk.
+    #[tokio::test]
+    async fn mock_agent_coalesces_same_message_chunks() {
+        let db_path = temp_file_db();
+        let repo = temp_git_repo();
+        let core = RunCore::new();
+        {
+            let conn = open_db_path(&db_path).unwrap();
+            insert_test_card(&conn, "card-1");
+            agents::insert_agent(&conn, "tester", "echo hi", "Test", false, true, &[]).unwrap();
+            agent_runs::insert_run(
+                &conn,
+                "run-mock-2",
+                "card-1",
+                "tester",
+                "/tmp/pending",
+                "agent/pending",
+                "pending",
+                &[],
+            )
+            .unwrap();
+        }
+        let (wt_path, _branch) = core
+            .create_run(
+                "run-mock-2".into(),
+                "card-1".into(),
+                repo.to_string_lossy().into_owned(),
+                "do the thing".into(),
+                mock_acp_agent_coalesced(),
+                db_path.clone(),
+            )
+            .await
+            .expect("create_run should succeed");
+
+        wait_waiting_for_input(&core, "run-mock-2").await;
+        core.cancel_run("run-mock-2").await;
+        let updates = wait_terminal(&core, "run-mock-2").await;
+
+        let texts: Vec<&str> = updates
+            .iter()
+            .filter_map(|u| match u {
+                RunUpdate::SessionUpdate { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            texts.len(),
+            1,
+            "expected ONE coalesced message, got {texts:?}"
+        );
+        assert_eq!(texts[0], "mock output chunk 0mock output chunk 1mock output chunk 2");
+
         let _ = std::process::Command::new("git")
             .args(["worktree", "remove", "--force"])
             .arg(&wt_path)
@@ -1555,7 +2243,7 @@ mod tests {
         let core = RunCore::new();
         {
             let conn = open_db_path(&db_path).unwrap();
-            insert_test_card(&conn, "card-1", Some(repo.to_str().unwrap()));
+            insert_test_card(&conn, "card-1");
             agents::insert_agent(&conn, "tester", "echo hi", "Test", false, true, &[]).unwrap();
             agent_runs::insert_run(
                 &conn,
@@ -1588,7 +2276,11 @@ mod tests {
             let has_session = {
                 let buf = core.buffers.lock().await;
                 buf.get("run-mock-2")
-                    .map(|b| b.updates.iter().any(|u| matches!(u, RunUpdate::SessionId { .. })))
+                    .map(|b| {
+                        b.updates
+                            .iter()
+                            .any(|u| matches!(u, RunUpdate::SessionId { .. }))
+                    })
                     .unwrap_or(false)
             };
             if has_session {
@@ -1626,23 +2318,12 @@ mod tests {
         let db_path = temp_file_db();
         let repo = temp_git_repo();
         let core = RunCore::new();
-        let pid_file = std::env::temp_dir().join(format!(
-            "tasker-mock-pid-{}.txt",
-            uuid::Uuid::new_v4()
-        ));
+        let pid_file =
+            std::env::temp_dir().join(format!("tasker-mock-pid-{}.txt", uuid::Uuid::new_v4()));
         {
             let conn = open_db_path(&db_path).unwrap();
-            insert_test_card(&conn, "card-hk", Some(repo.to_str().unwrap()));
-            agents::insert_agent(
-                &conn,
-                "tester",
-                "echo hi",
-                "Test",
-                false,
-                true,
-                &[],
-            )
-            .unwrap();
+            insert_test_card(&conn, "card-hk");
+            agents::insert_agent(&conn, "tester", "echo hi", "Test", false, true, &[]).unwrap();
             agent_runs::insert_run(
                 &conn,
                 "run-hk",
@@ -1673,7 +2354,10 @@ mod tests {
             if pid_file.exists() {
                 break;
             }
-            assert!(tokio::time::Instant::now() < deadline, "mock never wrote PID");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "mock never wrote PID"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
         let pid: u32 = std::fs::read_to_string(&pid_file)
@@ -1698,7 +2382,10 @@ mod tests {
             if has_session {
                 break;
             }
-            assert!(tokio::time::Instant::now() < deadline, "session never established");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "session never established"
+            );
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
 

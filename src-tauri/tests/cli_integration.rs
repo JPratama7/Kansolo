@@ -33,7 +33,6 @@ fn test_db() -> Connection {
              source_ref TEXT,
              source_status TEXT,
              tree_source_id TEXT,
-             repo_path TEXT,
             source_instance_id TEXT,
              created_at TEXT NOT NULL,
              updated_at TEXT NOT NULL,
@@ -55,6 +54,7 @@ fn test_db() -> Connection {
              session_id TEXT,
              worktree_path TEXT NOT NULL,
              branch TEXT NOT NULL,
+             repo_root TEXT,
              status TEXT NOT NULL,
              output TEXT,
              stop_reason TEXT,
@@ -94,16 +94,18 @@ fn test_db() -> Connection {
              enabled INTEGER NOT NULL DEFAULT 1,
              created_at TEXT NOT NULL
            );"#,
-    ).unwrap();
+    )
+    .unwrap();
     conn
 }
 
-/// Insert a local card with an optional repo_path (mirrors CLI's cmd_run).
-fn insert_card(conn: &rusqlite::Connection, id: &str, repo_path: Option<&str>) {
+/// Insert a local card (mirrors CLI's cmd_run). The repo path is resolved
+/// from the card's `tree_source_id` at run time, not stored on the card.
+fn insert_card(conn: &rusqlite::Connection, id: &str) {
     conn.execute(
-        r#"INSERT INTO cards (id, title, description, priority, "column", source, position, repo_path, created_at, updated_at)
-           VALUES (?1, 'Test Card', 'desc', 'medium', 'backlog', 'local', 0, ?2, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
-        rusqlite::params![id, repo_path],
+        r#"INSERT INTO cards (id, title, description, priority, "column", source, position, created_at, updated_at)
+           VALUES (?1, 'Test Card', 'desc', 'medium', 'backlog', 'local', 0, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
+        rusqlite::params![id],
     ).unwrap();
 }
 
@@ -112,7 +114,16 @@ fn insert_card(conn: &rusqlite::Connection, id: &str, repo_path: Option<&str>) {
 #[test]
 fn cli_agents_add_and_list() {
     let conn = test_db();
-    agents::insert_agent(&conn, "my-agent", "/usr/bin/echo", "Test agent", false, true, &["tdd".to_string()]).unwrap();
+    agents::insert_agent(
+        &conn,
+        "my-agent",
+        "/usr/bin/echo",
+        "Test agent",
+        false,
+        true,
+        &["tdd".to_string()],
+    )
+    .unwrap();
     let list = agents::list_agents(&conn).unwrap();
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].name, "my-agent");
@@ -136,8 +147,24 @@ fn cli_agents_add_built_in_claude_code() {
 #[test]
 fn cli_agents_edit_updates_command_and_skills() {
     let conn = test_db();
-    agents::insert_agent(&conn, "dev", "cmd1", "desc1", false, true, &["s1".to_string()]).unwrap();
-    agents::update_agent(&conn, "dev", "cmd2", "desc2", &["s2".to_string(), "s3".to_string()]).unwrap();
+    agents::insert_agent(
+        &conn,
+        "dev",
+        "cmd1",
+        "desc1",
+        false,
+        true,
+        &["s1".to_string()],
+    )
+    .unwrap();
+    agents::update_agent(
+        &conn,
+        "dev",
+        "cmd2",
+        "desc2",
+        &["s2".to_string(), "s3".to_string()],
+    )
+    .unwrap();
     let agent = agents::get_agent(&conn, "dev").unwrap().unwrap();
     assert_eq!(agent.command, "cmd2");
     assert_eq!(agent.description, "desc2");
@@ -155,9 +182,19 @@ fn cli_agents_remove() {
 #[test]
 fn cli_agents_remove_blocked_if_runs_exist() {
     let conn = test_db();
-    insert_card(&conn, "c-1", Some("/tmp/repo"));
+    insert_card(&conn, "c-1");
     agents::insert_agent(&conn, "a", "cmd", "", false, true, &[]).unwrap();
-    agent_runs::insert_run(&conn, "r-1", "c-1", "a", "/tmp/wt", "agent/c-1", "running", &[]).unwrap();
+    agent_runs::insert_run(
+        &conn,
+        "r-1",
+        "c-1",
+        "a",
+        "/tmp/wt",
+        "agent/c-1",
+        "running",
+        &[],
+    )
+    .unwrap();
     // delete_agent with delete_runs=false should fail.
     let result = agents::delete_agent(&conn, "a", false);
     assert!(result.is_err());
@@ -166,56 +203,80 @@ fn cli_agents_remove_blocked_if_runs_exist() {
 // ── Card validation (CLI cmd_run checks) ──
 
 #[test]
-fn cli_run_accepts_imported_card_with_repo_path() {
+fn cli_run_accepts_imported_card_with_tree_source() {
     let conn = test_db();
-    // Imported (jira) card with explicit repo_path — should be allowed now.
+    // Imported (jira) card linked to a tree_source — the repo path is
+    // resolved from tree_sources.path via tree_source_id at run time.
     conn.execute(
-        r#"INSERT INTO cards (id, title, description, priority, "column", source, position, repo_path, created_at, updated_at)
-           VALUES ('jira-1', 'Jira', 'do thing', 'medium', 'backlog', 'jira', 0, '/tmp/repo', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
+        r#"INSERT INTO tree_sources (id, label, path, editor_command, created_at)
+           VALUES ('ts-1', 'My Repo', '/tmp/repo', NULL, '2026-01-01T00:00:00Z')"#,
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        r#"INSERT INTO cards (id, title, description, priority, "column", source, position, tree_source_id, created_at, updated_at)
+           VALUES ('jira-1', 'Jira', 'do thing', 'medium', 'backlog', 'jira', 0, 'ts-1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
         [],
     ).unwrap();
     let card = cards::get_card_by_id(&conn, "jira-1").unwrap().unwrap();
     assert_eq!(card.source, "jira");
-    assert_eq!(card.repo_path.as_deref(), Some("/tmp/repo"));
+    assert_eq!(card.tree_source_id.as_deref(), Some("ts-1"));
+    // Runner resolves the repo path from the linked tree source.
+    let path = cards::resolve_repo_path(&conn, &card).unwrap();
+    assert_eq!(path, "/tmp/repo");
 }
 
 #[test]
 fn cli_run_rejects_card_without_repo_or_tree_source() {
     let conn = test_db();
-    insert_card(&conn, "c-norepo", None);
+    insert_card(&conn, "c-norepo");
     let card = cards::get_card_by_id(&conn, "c-norepo").unwrap().unwrap();
-    assert!(card.repo_path.is_none());
     assert!(card.tree_source_id.is_none());
+    // No tree_source_id => resolve_repo_path returns a validation error.
+    let err = cards::resolve_repo_path(&conn, &card).unwrap_err();
+    assert!(err.message.contains("tree_source_id"));
 }
 
 #[test]
-fn cli_run_accepts_card_with_repo() {
+fn cli_run_accepts_card_with_tree_source() {
     let conn = test_db();
-    insert_card(&conn, "c-ok", Some("/tmp/myrepo"));
+    conn.execute(
+        r#"INSERT INTO tree_sources (id, label, path, editor_command, created_at)
+           VALUES ('ts-ok', 'My Repo', '/tmp/myrepo', NULL, '2026-01-01T00:00:00Z')"#,
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        r#"INSERT INTO cards (id, title, description, priority, "column", source, position, tree_source_id, created_at, updated_at)
+           VALUES ('c-ok', 'Card', 'desc', 'medium', 'backlog', 'local', 0, 'ts-ok', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
+        [],
+    ).unwrap();
     let card = cards::get_card_by_id(&conn, "c-ok").unwrap().unwrap();
-    assert_eq!(card.repo_path.as_deref(), Some("/tmp/myrepo"));
+    assert_eq!(card.tree_source_id.as_deref(), Some("ts-ok"));
+    let path = cards::resolve_repo_path(&conn, &card).unwrap();
+    assert_eq!(path, "/tmp/myrepo");
 }
 
 #[test]
 fn cli_run_resolves_repo_from_tree_source() {
     let conn = test_db();
-    // Card with tree_source_id but no repo_path.
+    // Card with tree_source_id (no repo_path column anymore).
     conn.execute(
         r#"INSERT INTO tree_sources (id, label, path, editor_command, created_at)
            VALUES ('ts-1', 'My Repo', '/tmp/myrepo', NULL, '2026-01-01T00:00:00Z')"#,
         [],
-    ).unwrap();
+    )
+    .unwrap();
     conn.execute(
         r#"INSERT INTO cards (id, title, description, priority, "column", source, position, tree_source_id, created_at, updated_at)
            VALUES ('c-ts', 'Card', 'desc', 'medium', 'backlog', 'jira', 0, 'ts-1', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')"#,
         [],
     ).unwrap();
     let card = cards::get_card_by_id(&conn, "c-ts").unwrap().unwrap();
-    assert!(card.repo_path.is_none());
     assert_eq!(card.tree_source_id.as_deref(), Some("ts-1"));
     // Runner resolves repo_path from tree_source.
-    let path = kansolo_lib::db::settings::get_tree_source_path(&conn, "ts-1").unwrap();
-    assert_eq!(path.as_deref(), Some("/tmp/myrepo"));
+    let path = cards::resolve_repo_path(&conn, &card).unwrap();
+    assert_eq!(path, "/tmp/myrepo");
 }
 
 // ── Run lifecycle (CLI run/status/cancel) ──
@@ -223,18 +284,38 @@ fn cli_run_resolves_repo_from_tree_source() {
 #[test]
 fn cli_run_creates_run_and_locks_card() {
     let conn = test_db();
-    insert_card(&conn, "c-1", Some("/tmp/repo"));
+    insert_card(&conn, "c-1");
     agents::insert_agent(&conn, "a", "cmd", "", false, true, &[]).unwrap();
-    agent_runs::insert_run(&conn, "r-1", "c-1", "a", "/tmp/wt", "agent/c-1", "running", &[]).unwrap();
+    agent_runs::insert_run(
+        &conn,
+        "r-1",
+        "c-1",
+        "a",
+        "/tmp/wt",
+        "agent/c-1",
+        "running",
+        &[],
+    )
+    .unwrap();
     assert!(agent_runs::is_card_locked(&conn, "c-1"));
 }
 
 #[test]
 fn cli_run_card_lock_prevents_second_run() {
     let conn = test_db();
-    insert_card(&conn, "c-1", Some("/tmp/repo"));
+    insert_card(&conn, "c-1");
     agents::insert_agent(&conn, "a", "cmd", "", false, true, &[]).unwrap();
-    agent_runs::insert_run(&conn, "r-1", "c-1", "a", "/tmp/wt", "agent/c-1", "running", &[]).unwrap();
+    agent_runs::insert_run(
+        &conn,
+        "r-1",
+        "c-1",
+        "a",
+        "/tmp/wt",
+        "agent/c-1",
+        "running",
+        &[],
+    )
+    .unwrap();
     assert!(agent_runs::is_card_locked(&conn, "c-1"));
     // CLI checks is_card_locked before creating a second run.
 }
@@ -242,12 +323,29 @@ fn cli_run_card_lock_prevents_second_run() {
 #[test]
 fn cli_cancel_updates_status() {
     let conn = test_db();
-    insert_card(&conn, "c-1", Some("/tmp/repo"));
+    insert_card(&conn, "c-1");
     agents::insert_agent(&conn, "a", "cmd", "", false, true, &[]).unwrap();
-    agent_runs::insert_run(&conn, "r-1", "c-1", "a", "/tmp/wt", "agent/c-1", "running", &[]).unwrap();
+    agent_runs::insert_run(
+        &conn,
+        "r-1",
+        "c-1",
+        "a",
+        "/tmp/wt",
+        "agent/c-1",
+        "running",
+        &[],
+    )
+    .unwrap();
     agent_runs::update_status(
-        &conn, "r-1", "cancelled", None, Some("user_cancelled"), None, Some(&now_iso()),
-    ).unwrap();
+        &conn,
+        "r-1",
+        "cancelled",
+        None,
+        Some("user_cancelled"),
+        None,
+        Some(&now_iso()),
+    )
+    .unwrap();
     let run = agent_runs::get_run(&conn, "r-1").unwrap().unwrap();
     assert_eq!(run.status, "cancelled");
     assert_eq!(run.stop_reason.as_deref(), Some("user_cancelled"));
@@ -257,10 +355,30 @@ fn cli_cancel_updates_status() {
 #[test]
 fn cli_status_lists_recent_runs() {
     let conn = test_db();
-    insert_card(&conn, "c-1", Some("/tmp/repo"));
+    insert_card(&conn, "c-1");
     agents::insert_agent(&conn, "a", "cmd", "", false, true, &[]).unwrap();
-    agent_runs::insert_run(&conn, "r-1", "c-1", "a", "/tmp/wt", "agent/c-1", "completed", &[]).unwrap();
-    agent_runs::insert_run(&conn, "r-2", "c-1", "a", "/tmp/wt", "agent/c-1", "running", &[]).unwrap();
+    agent_runs::insert_run(
+        &conn,
+        "r-1",
+        "c-1",
+        "a",
+        "/tmp/wt",
+        "agent/c-1",
+        "completed",
+        &[],
+    )
+    .unwrap();
+    agent_runs::insert_run(
+        &conn,
+        "r-2",
+        "c-1",
+        "a",
+        "/tmp/wt",
+        "agent/c-1",
+        "running",
+        &[],
+    )
+    .unwrap();
     let runs = agent_runs::list_recent(&conn, 20).unwrap();
     assert_eq!(runs.len(), 2);
 }
@@ -268,9 +386,19 @@ fn cli_status_lists_recent_runs() {
 #[test]
 fn cli_status_get_active_run() {
     let conn = test_db();
-    insert_card(&conn, "c-1", Some("/tmp/repo"));
+    insert_card(&conn, "c-1");
     agents::insert_agent(&conn, "a", "cmd", "", false, true, &[]).unwrap();
-    agent_runs::insert_run(&conn, "r-1", "c-1", "a", "/tmp/wt", "agent/c-1", "running", &[]).unwrap();
+    agent_runs::insert_run(
+        &conn,
+        "r-1",
+        "c-1",
+        "a",
+        "/tmp/wt",
+        "agent/c-1",
+        "running",
+        &[],
+    )
+    .unwrap();
     let run = agent_runs::get_active_run(&conn, "c-1").unwrap().unwrap();
     assert_eq!(run.id, "r-1");
     assert_eq!(run.status, "running");
@@ -281,9 +409,19 @@ fn cli_status_get_active_run() {
 #[test]
 fn cli_cleanup_reaps_dangling_runs() {
     let conn = test_db();
-    insert_card(&conn, "c-1", Some("/tmp/repo"));
+    insert_card(&conn, "c-1");
     agents::insert_agent(&conn, "a", "cmd", "", false, true, &[]).unwrap();
-    agent_runs::insert_run(&conn, "r-1", "c-1", "a", "/tmp/wt", "agent/c-1", "running", &[]).unwrap();
+    agent_runs::insert_run(
+        &conn,
+        "r-1",
+        "c-1",
+        "a",
+        "/tmp/wt",
+        "agent/c-1",
+        "running",
+        &[],
+    )
+    .unwrap();
     let reaped = runner::cleanup_dangling(&conn).unwrap();
     assert_eq!(reaped, vec!["r-1"]);
     let run = agent_runs::get_run(&conn, "r-1").unwrap().unwrap();
@@ -334,9 +472,19 @@ fn cli_build_skills_section_formats_known_skills() {
 #[test]
 fn cli_merge_sets_merged_at() {
     let conn = test_db();
-    insert_card(&conn, "c-1", Some("/tmp/repo"));
+    insert_card(&conn, "c-1");
     agents::insert_agent(&conn, "a", "cmd", "", false, true, &[]).unwrap();
-    agent_runs::insert_run(&conn, "r-1", "c-1", "a", "/tmp/wt", "agent/c-1", "completed", &[]).unwrap();
+    agent_runs::insert_run(
+        &conn,
+        "r-1",
+        "c-1",
+        "a",
+        "/tmp/wt",
+        "agent/c-1",
+        "completed",
+        &[],
+    )
+    .unwrap();
     agent_runs::set_merged(&conn, "r-1", &now_iso()).unwrap();
     let run = agent_runs::get_run(&conn, "r-1").unwrap().unwrap();
     assert!(run.merged_at.is_some());

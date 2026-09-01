@@ -1,18 +1,17 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-mod editor;
-mod mcp;
-mod tray;
 pub mod cli;
 pub mod db;
-mod source;
+mod editor;
+pub mod error;
 mod mapping;
-mod sync;
+mod mcp;
 pub mod runner;
 pub mod skills;
-mod worktree;
-pub mod error;
+mod source;
+mod sync;
 #[cfg(test)]
 pub mod test_utils;
+mod tray;
+mod worktree;
 
 use tauri::{Manager, WindowEvent};
 
@@ -112,9 +111,11 @@ pub fn run() {
             runner::acp_cleanup,
             runner::acp_cancel_run,
             runner::acp_respond_permission,
+            runner::acp_send_followup,
             runner::acp_diff_main,
             runner::acp_merge,
-            runner::acp_remove_worktree
+            runner::acp_remove_worktree,
+            runner::acp_delete_run
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -132,11 +133,9 @@ pub fn read_setting<R: tauri::Runtime>(app: &tauri::AppHandle<R>, key: &str) -> 
     // Use the shared opener so WAL + busy_timeout + FK pragmas are applied
     // consistently with the rest of the app (avoids locked/FK-disabled reads).
     let conn = db::open_db_path(&db_path).ok()?;
-    conn.query_row(
-        "SELECT value FROM settings WHERE key = ?1",
-        [key],
-        |r| r.get::<_, String>(0),
-    )
+    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+        r.get::<_, String>(0)
+    })
     .ok()
 }
 

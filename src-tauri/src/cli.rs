@@ -17,8 +17,8 @@ use crate::worktree::WorktreeManager;
 
 /// Known CLI subcommands. Used by `main.rs` to decide CLI vs GUI mode.
 pub const SUBCOMMANDS: &[&str] = &[
-    "run", "status", "cancel", "list", "merge", "cleanup", "agents", "skills",
-    "-h", "--help", "help",
+    "run", "status", "cancel", "list", "merge", "cleanup", "agents", "skills", "-h", "--help",
+    "help",
 ];
 
 /// Entry point: parse args, dispatch, exit with code.
@@ -70,7 +70,15 @@ fn open_and_init() -> Result<rusqlite::Connection, AcpError> {
     let path = resolve_db_path()?;
     let conn = open_db_path(&path)?;
     db::run_migrations(&conn)?;
-    agents::upsert_agent(&conn, "claude-code", "", "Claude Code via ACP SDK", true, true, &[])?;
+    agents::upsert_agent(
+        &conn,
+        "claude-code",
+        "",
+        "Claude Code via ACP SDK",
+        true,
+        true,
+        &[],
+    )?;
     Ok(conn)
 }
 
@@ -108,7 +116,8 @@ struct ParsedArgs {
 /// and bare positionals. Repeated flags collect into a Vec.
 fn parse_args(args: &[String], bool_flags: &[&str]) -> ParsedArgs {
     let mut positional = Vec::new();
-    let mut flags: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    let mut flags: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
     let mut bool_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     let bool_lookup: std::collections::HashSet<&str> = bool_flags.iter().copied().collect();
 
@@ -121,7 +130,10 @@ fn parse_args(args: &[String], bool_flags: &[&str]) -> ParsedArgs {
             } else if bool_lookup.contains(rest) {
                 bool_set.insert(rest.to_string());
             } else if i + 1 < args.len() && !args[i + 1].starts_with("--") {
-                flags.entry(rest.to_string()).or_default().push(args[i + 1].clone());
+                flags
+                    .entry(rest.to_string())
+                    .or_default()
+                    .push(args[i + 1].clone());
                 i += 1;
             } else {
                 // Treat trailing flag with no value as a bool flag.
@@ -132,18 +144,29 @@ fn parse_args(args: &[String], bool_flags: &[&str]) -> ParsedArgs {
         }
         i += 1;
     }
-    ParsedArgs { positional, flags, bool_flags: bool_set }
+    ParsedArgs {
+        positional,
+        flags,
+        bool_flags: bool_set,
+    }
 }
 
-fn last_flag<'a>(flags: &'a std::collections::HashMap<String, Vec<String>>, key: &str) -> Option<&'a str> {
+fn last_flag<'a>(
+    flags: &'a std::collections::HashMap<String, Vec<String>>,
+    key: &str,
+) -> Option<&'a str> {
     flags.get(key).and_then(|v| v.last()).map(|s| s.as_str())
 }
 
 /// `run <card_id> [--agent <name>] [--skill <name>]... [--input <text>]`
 async fn cmd_run(args: &[String]) -> Result<i32, AcpError> {
     let parsed = parse_args(args, &[]);
-    let card_id = parsed.positional.first()
-        .ok_or_else(|| AcpError::validation("usage: run <card_id> [--agent ...] [--skill ...] [--input ...]"))?
+    let card_id = parsed
+        .positional
+        .first()
+        .ok_or_else(|| {
+            AcpError::validation("usage: run <card_id> [--agent ...] [--skill ...] [--input ...]")
+        })?
         .clone();
 
     let (run_id, repo_path, prompt, skill_names, acp_agent) = {
@@ -151,19 +174,25 @@ async fn cmd_run(args: &[String]) -> Result<i32, AcpError> {
         // Resolve agent: --agent flag > acp_default_agent setting > error.
         let agent_name = match last_flag(&parsed.flags, "agent") {
             Some(n) => n.to_string(),
-            None => conn.query_row(
-                "SELECT value FROM settings WHERE key = 'acp_default_agent'",
-                [],
-                |r| r.get::<_, String>(0),
-            ).map_err(|_| AcpError::validation(
-                "no agent specified; pass --agent <name> or set acp_default_agent"
-            ))?,
+            None => conn
+                .query_row(
+                    "SELECT value FROM settings WHERE key = 'acp_default_agent'",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
+                .map_err(|_| {
+                    AcpError::validation(
+                        "no agent specified; pass --agent <name> or set acp_default_agent",
+                    )
+                })?,
         };
 
         let agent = agents::get_agent(&conn, &agent_name)?
             .ok_or_else(|| AcpError::not_found(format!("Agent '{agent_name}' not found")))?;
         if !agent.enabled {
-            return Err(AcpError::validation(format!("Agent '{agent_name}' is disabled")));
+            return Err(AcpError::validation(format!(
+                "Agent '{agent_name}' is disabled"
+            )));
         }
 
         if agent_runs::is_card_locked(&conn, &card_id) {
@@ -174,19 +203,7 @@ async fn cmd_run(args: &[String]) -> Result<i32, AcpError> {
 
         let card = cards::get_card_by_id(&conn, &card_id)?
             .ok_or_else(|| AcpError::not_found(format!("Card '{card_id}' not found")))?;
-        // Resolve repo_path — explicit repo_path > tree_source path.
-        let repo_path = match card.repo_path.as_ref() {
-            Some(p) if !p.is_empty() => p.clone(),
-            _ => match card.tree_source_id.as_ref() {
-                Some(tid) => crate::db::settings::get_tree_source_path(&conn, tid)?
-                    .ok_or_else(|| AcpError::validation(format!(
-                        "Card '{card_id}' tree source '{tid}' no longer exists."
-                    )))?,
-                None => return Err(AcpError::validation(format!(
-                    "Card '{card_id}' has no repo_path or tree_source_id set."
-                ))),
-            },
-        };
+        let repo_path = cards::resolve_repo_path(&conn, &card)?;
 
         let acp_agent = if agent.built_in && agent_name == "claude-code" {
             agent_client_protocol::AcpAgent::claude_agent()
@@ -197,7 +214,9 @@ async fn cmd_run(args: &[String]) -> Result<i32, AcpError> {
 
         // Resolve skills: --skill flags (filtered against agent's skills) > all agent skills.
         let sn: Vec<String> = match parsed.flags.get("skill") {
-            Some(names) => agent.skills.iter()
+            Some(names) => agent
+                .skills
+                .iter()
                 .filter(|s| names.iter().any(|n| n == *s))
                 .cloned()
                 .collect(),
@@ -224,14 +243,28 @@ async fn cmd_run(args: &[String]) -> Result<i32, AcpError> {
 
         let run_id = uuid::Uuid::new_v4().to_string();
         agent_runs::insert_run(
-            &conn, &run_id, &card_id, &agent_name,
-            "/tmp/pending", "agent/pending", "pending", &sn,
+            &conn,
+            &run_id,
+            &card_id,
+            &agent_name,
+            "/tmp/pending",
+            "agent/pending",
+            "pending",
+            &sn,
         )?;
         (run_id, repo_path, prompt, sn, acp_agent)
     };
 
     // Create worktree + spawn SDK session (async). Stream updates to stdout.
-    let exit_code = spawn_and_stream(&run_id, &card_id, &repo_path, &prompt, skill_names, acp_agent).await?;
+    let exit_code = spawn_and_stream(
+        &run_id,
+        &card_id,
+        &repo_path,
+        &prompt,
+        skill_names,
+        acp_agent,
+    )
+    .await?;
     Ok(exit_code)
 }
 
@@ -248,6 +281,19 @@ async fn spawn_and_stream(
 ) -> Result<i32, AcpError> {
     let wt_mgr = WorktreeManager::new(&PathBuf::from(repo_path));
     let worktree = wt_mgr.create(card_id).await?;
+
+    // Persist the worktree path/branch/repo_root on the run row, replacing
+    // the placeholder values written by `insert_run`.
+    {
+        let conn = open_and_init()?;
+        agent_runs::set_worktree_info(
+            &conn,
+            run_id,
+            &worktree.path.to_string_lossy(),
+            &worktree.branch,
+            repo_path,
+        )?;
+    }
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RunUpdate>();
     let cwd = worktree.path.clone();
@@ -272,9 +318,55 @@ async fn spawn_and_stream(
                                 use agent_client_protocol::SessionMessage;
                                 match msg {
                                     SessionMessage::SessionMessage(dispatch) => {
-                                        let _ = tx.send(RunUpdate::SessionUpdate {
-                                            text: format!("{:?}", dispatch),
-                                        });
+                                        // CLI has no interactive UI, so auto-respond
+                                        // to permission requests with the allow option.
+                                        // Without this the agent hangs forever waiting
+                                        // for a response that never comes.
+                                        let method = dispatch.method().to_string();
+                                        if method == "session/request_permission" {
+                                            use agent_client_protocol::schema::v1::RequestPermissionRequest;
+                                            match dispatch.into_request::<RequestPermissionRequest>() {
+                                                Ok(Ok((req, responder))) => {
+                                                    let option_id = runner::pick_allow_option(&req.options);
+                                                    let description = runner::summarize_tool_call(&req.tool_call);
+                                                    let _ = tx.send(RunUpdate::PermissionRequest {
+                                                        request_id: req.tool_call.tool_call_id.0.to_string(),
+                                                        description,
+                                                    });
+                                                    use agent_client_protocol::schema::v1::{
+                                                        RequestPermissionResponse,
+                                                        RequestPermissionOutcome,
+                                                        SelectedPermissionOutcome,
+                                                    };
+                                                    let _ = responder.respond(
+                                                        RequestPermissionResponse::new(
+                                                            RequestPermissionOutcome::Selected(
+                                                                SelectedPermissionOutcome::new(option_id),
+                                                            ),
+                                                        ),
+                                                    );
+                                                }
+                                                Ok(Err(_)) | Err(_) => {
+                                                    let _ = tx.send(RunUpdate::SessionUpdate {
+                                                        text: "permission request: failed to parse".to_string(),
+                                                    });
+                                                }
+                                            }
+                                        } else if method == "session/update" {
+                                            use agent_client_protocol::schema::v1::SessionNotification;
+                                            match dispatch.into_notification::<SessionNotification>() {
+                                                Ok(Ok(notif)) => {
+                                                    if let Some(text) = runner::format_session_update(&notif.update) {
+                                                        let _ = tx.send(RunUpdate::SessionUpdate { text });
+                                                    }
+                                                }
+                                                Ok(Err(_)) | Err(_) => {}
+                                            }
+                                        } else {
+                                            let _ = tx.send(RunUpdate::SessionUpdate {
+                                                text: format!("(unhandled: {method})"),
+                                            });
+                                        }
                                     }
                                     SessionMessage::StopReason(reason) => {
                                         let _ = tx.send(RunUpdate::Completed {
@@ -299,7 +391,9 @@ async fn spawn_and_stream(
             })
             .await;
         if let Err(e) = result {
-            let _ = tx_for_err.send(RunUpdate::Failed { error: e.to_string() });
+            let _ = tx_for_err.send(RunUpdate::Failed {
+                error: e.to_string(),
+            });
         }
     });
 
@@ -329,10 +423,18 @@ async fn spawn_and_stream(
                 break;
             }
             RunUpdate::PermissionRequest { description, .. } => {
-                eprintln!("[permission request] {description} (auto-denied in CLI)");
+                eprintln!("[permission request] {description} (auto-approved in CLI)");
             }
             RunUpdate::PermissionTimeout => {
                 eprintln!("[permission request timed out]");
+            }
+            RunUpdate::WaitingForInput { stop_reason } => {
+                // CLI's session handler sends Completed directly (no
+                // interactive mode), so this should never fire. Handle
+                // gracefully just in case.
+                eprintln!("\n[waiting for input] stop_reason={stop_reason}");
+                exit_code = 0;
+                break;
             }
         }
     }
@@ -346,9 +448,7 @@ async fn spawn_and_stream(
     } else {
         ("failed", Some("CLI: run did not complete successfully"))
     };
-    agent_runs::update_status(
-        &conn, run_id, status, None, None, error, Some(&now_iso()),
-    )?;
+    agent_runs::update_status(&conn, run_id, status, None, None, error, Some(&now_iso()))?;
     Ok(exit_code)
 }
 
@@ -356,13 +456,17 @@ async fn spawn_and_stream(
 async fn cmd_status(args: &[String]) -> Result<i32, AcpError> {
     let conn = open_and_init()?;
     if let Some(card_id) = args.first() {
-        let run = agent_runs::get_active_run(&conn, card_id)?
-            .or_else(|| {
-                // Fall back to the most recent run for the card (any status).
-                agent_runs::get_latest_run_for_card(&conn, card_id).ok().flatten()
-            });
+        let run = agent_runs::get_active_run(&conn, card_id)?.or_else(|| {
+            // Fall back to the most recent run for the card (any status).
+            agent_runs::get_latest_run_for_card(&conn, card_id)
+                .ok()
+                .flatten()
+        });
         match run {
-            Some(r) => { print_run(&r); Ok(0) }
+            Some(r) => {
+                print_run(&r);
+                Ok(0)
+            }
             None => {
                 println!("no runs for card {card_id}");
                 Ok(0)
@@ -396,13 +500,20 @@ fn print_run(r: &agent_runs::AgentRun) {
 
 /// `cancel <card_id>` — cancel active run (update DB to "cancelled").
 async fn cmd_cancel(args: &[String]) -> Result<i32, AcpError> {
-    let card_id = args.first()
+    let card_id = args
+        .first()
         .ok_or_else(|| AcpError::validation("usage: cancel <card_id>"))?;
     let conn = open_and_init()?;
     let run = agent_runs::get_active_run(&conn, card_id)?
         .ok_or_else(|| AcpError::not_found(format!("no active run for card {card_id}")))?;
     agent_runs::update_status(
-        &conn, &run.id, "cancelled", None, Some("user_cancelled"), None, Some(&now_iso()),
+        &conn,
+        &run.id,
+        "cancelled",
+        None,
+        Some("user_cancelled"),
+        None,
+        Some(&now_iso()),
     )?;
     println!("cancelled run {}", run.id);
     Ok(0)
@@ -411,32 +522,44 @@ async fn cmd_cancel(args: &[String]) -> Result<i32, AcpError> {
 /// `list` — list cards with their lock/run state.
 async fn cmd_list(_args: &[String]) -> Result<i32, AcpError> {
     let conn = open_and_init()?;
-    let mut stmt = conn.prepare(
-        r#"SELECT id, title, "column", source, repo_path FROM cards ORDER BY "column", position ASC"#,
-    ).map_err(|e| AcpError::internal(e.to_string()))?;
-    let rows = stmt.query_map([], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, String>(3)?,
-            r.get::<_, Option<String>>(4)?,
-        ))
-    }).map_err(|e| AcpError::internal(e.to_string()))?;
+    let mut stmt = conn
+        .prepare(
+            r#"SELECT c.id, c.title, c."column", c.source, ts.label
+           FROM cards c LEFT JOIN tree_sources ts ON ts.id = c.tree_source_id
+           ORDER BY c."column", c.position ASC"#,
+        )
+        .map_err(|e| AcpError::internal(e.to_string()))?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
+        })
+        .map_err(|e| AcpError::internal(e.to_string()))?;
     // Collect first so the statement borrow ends before we query is_card_locked.
     let mut cards: Vec<(String, String, String, String, Option<String>)> = Vec::new();
     for r in rows {
         cards.push(r.map_err(|e| AcpError::internal(e.to_string()))?);
     }
     drop(stmt);
-    println!("{:<12} {:<24} {:<10} {:<8} {:<6} {}", "id", "title", "column", "source", "locked", "repo");
-    for (id, title, column, source, repo) in cards {
+    println!(
+        "{:<12} {:<24} {:<10} {:<8} {:<6} {}",
+        "id", "title", "column", "source", "locked", "tree"
+    );
+    for (id, title, column, source, tree) in cards {
         let locked = agent_runs::is_card_locked(&conn, &id);
         println!(
             "{:<12} {:<24} {:<10} {:<8} {:<6} {}",
-            id, truncate(&title, 24), column, source,
+            id,
+            truncate(&title, 24),
+            column,
+            source,
             if locked { "yes" } else { "no" },
-            repo.unwrap_or_else(|| "-".to_string())
+            tree.unwrap_or_else(|| "-".to_string())
         );
     }
     Ok(0)
@@ -461,7 +584,9 @@ fn truncate(s: &str, n: usize) -> String {
 /// unless --yes, call merge_branch, set merged_at on success.
 async fn cmd_merge(args: &[String]) -> Result<i32, AcpError> {
     let parsed = parse_args(args, &["yes", "prune"]);
-    let card_id = parsed.positional.first()
+    let card_id = parsed
+        .positional
+        .first()
         .ok_or_else(|| AcpError::validation("usage: merge <card_id> [--yes] [--prune]"))?
         .clone();
     let yes = parsed.bool_flags.contains("yes");
@@ -469,20 +594,18 @@ async fn cmd_merge(args: &[String]) -> Result<i32, AcpError> {
 
     let (repo_path, run_id) = {
         let conn = open_and_init()?;
-        let card = cards::get_card_by_id(&conn, &card_id)?
-            .ok_or_else(|| AcpError::not_found(format!("Card '{card_id}' not found")))?;
-        let repo = card.repo_path.clone()
-            .ok_or_else(|| AcpError::validation("Card has no repo_path"))?;
-        // Find the run: active first, then most recent.
-        let run_id = match agent_runs::get_active_run(&conn, &card_id)? {
-            Some(r) => r.id,
-            None => agent_runs::list_recent(&conn, 100)?
-                .into_iter()
-                .find(|r| r.card_id == card_id)
-                .map(|r| r.id)
-                .ok_or_else(|| AcpError::not_found("No run found for card"))?,
-        };
-        (repo, run_id)
+        // Find the run: active first, then most recent. The repo root comes
+        // from the run row (persisted by set_worktree_info when the worktree
+        // was created), not from the card.
+        let run = agent_runs::get_active_run(&conn, &card_id)?
+            .or(agent_runs::get_latest_run_for_card(&conn, &card_id)?)
+            .ok_or_else(|| AcpError::not_found("No run found for card"))?;
+        let repo_root = run.repo_root.as_ref().ok_or_else(|| {
+            AcpError::validation(
+                "Run has no repo_root (may be a pre-migration run without a repo path)",
+            )
+        })?;
+        (repo_root.clone(), run.id)
     };
 
     // Print diff summary.
@@ -572,7 +695,10 @@ async fn cmd_agents(args: &[String]) -> Result<i32, AcpError> {
                 println!("no agents");
                 return Ok(0);
             }
-            println!("{:<16} {:<24} {:<8} {:<8} {}", "name", "command", "built_in", "enabled", "skills");
+            println!(
+                "{:<16} {:<24} {:<8} {:<8} {}",
+                "name", "command", "built_in", "enabled", "skills"
+            );
             for a in agents {
                 println!(
                     "{:<16} {:<24} {:<8} {:<8} {}",
@@ -599,10 +725,18 @@ async fn cmd_agents(args: &[String]) -> Result<i32, AcpError> {
 /// `agents add <name> --command <path> [--desc <text>] [--skill <name>]...`
 fn cmd_agents_add(args: &[String]) -> Result<i32, AcpError> {
     let parsed = parse_args(args, &[]);
-    let name = parsed.positional.first()
-        .ok_or_else(|| AcpError::validation("usage: agents add <name> --command <path> [--desc ...] [--skill ...]"))?
+    let name = parsed
+        .positional
+        .first()
+        .ok_or_else(|| {
+            AcpError::validation(
+                "usage: agents add <name> --command <path> [--desc ...] [--skill ...]",
+            )
+        })?
         .clone();
-    let command = last_flag(&parsed.flags, "command").unwrap_or("").to_string();
+    let command = last_flag(&parsed.flags, "command")
+        .unwrap_or("")
+        .to_string();
     let desc = last_flag(&parsed.flags, "desc").unwrap_or("").to_string();
     let skills: Vec<String> = parsed.flags.get("skill").cloned().unwrap_or_default();
     if name.is_empty() {
@@ -610,7 +744,9 @@ fn cmd_agents_add(args: &[String]) -> Result<i32, AcpError> {
     }
     // Built-in agents (claude-code) have empty command — allowed.
     if command.is_empty() && name != "claude-code" {
-        return Err(AcpError::validation("Agent command cannot be empty for non-built-in agents"));
+        return Err(AcpError::validation(
+            "Agent command cannot be empty for non-built-in agents",
+        ));
     }
     let conn = open_and_init()?;
     let built_in = name == "claude-code";
@@ -622,17 +758,29 @@ fn cmd_agents_add(args: &[String]) -> Result<i32, AcpError> {
 /// `agents edit <name> [--command <path>] [--desc <text>] [--skill <name>]...`
 fn cmd_agents_edit(args: &[String]) -> Result<i32, AcpError> {
     let parsed = parse_args(args, &[]);
-    let name = parsed.positional.first()
-        .ok_or_else(|| AcpError::validation("usage: agents edit <name> [--command ...] [--desc ...] [--skill ...]"))?
+    let name = parsed
+        .positional
+        .first()
+        .ok_or_else(|| {
+            AcpError::validation(
+                "usage: agents edit <name> [--command ...] [--desc ...] [--skill ...]",
+            )
+        })?
         .clone();
     let conn = open_and_init()?;
     let existing = agents::get_agent(&conn, &name)?
         .ok_or_else(|| AcpError::not_found(format!("Agent '{name}' not found")))?;
-    let command = last_flag(&parsed.flags, "command").map(|s| s.to_string())
+    let command = last_flag(&parsed.flags, "command")
+        .map(|s| s.to_string())
         .unwrap_or(existing.command);
-    let desc = last_flag(&parsed.flags, "desc").map(|s| s.to_string())
+    let desc = last_flag(&parsed.flags, "desc")
+        .map(|s| s.to_string())
         .unwrap_or(existing.description);
-    let skills: Vec<String> = parsed.flags.get("skill").cloned().unwrap_or(existing.skills);
+    let skills: Vec<String> = parsed
+        .flags
+        .get("skill")
+        .cloned()
+        .unwrap_or(existing.skills);
     agents::update_agent(&conn, &name, &command, &desc, &skills)?;
     println!("updated agent {name}");
     Ok(0)
@@ -641,7 +789,9 @@ fn cmd_agents_edit(args: &[String]) -> Result<i32, AcpError> {
 /// `agents remove <name>` — delete from DB (delete_runs=false by default).
 fn cmd_agents_remove(args: &[String]) -> Result<i32, AcpError> {
     let parsed = parse_args(args, &[]);
-    let name = parsed.positional.first()
+    let name = parsed
+        .positional
+        .first()
         .ok_or_else(|| AcpError::validation("usage: agents remove <name>"))?
         .clone();
     let conn = open_and_init()?;

@@ -1,16 +1,10 @@
-//! Mock ACP agent for testing the runner end-to-end.
+//! Minimal ACP agent mock for runner end-to-end tests.
 //!
-//! Self-spawn pattern: the runner tests point `AcpAgentConfig` at the lib
-//! test harness binary (`std::env::current_exe()`) with
-//! `--exact mock_acp_server` and `MOCK_ACP_BINARY=1`. The `mock_acp_server`
-//! test in `runner.rs` then calls [`run_mock_server`] instead of asserting.
-//! The mock speaks just enough Agent Client Protocol v1 over newline-
-//! delimited JSON-RPC on stdio: initialize, session/new, session/prompt
-//! (streaming `session/update` text chunks, then `end_turn`), and
-//! session/cancel. Env knobs: `MOCK_ACP_UPDATES` (chunks per prompt,
-//! default 1), `MOCK_ACP_HANG` (never answer session/prompt — for the
-//! cancel test), `MOCK_ACP_PID_FILE` (write own PID to this path on start
-//! — for the hard-kill test).
+//! The runner tests spawn the lib test binary itself (`std::env::current_exe()`)
+//! with `MOCK_ACP_BINARY=1` and `--exact mock_acp_server`. The mock then runs
+//! the JSON-RPC loop on stdio: initialize, session/new, session/prompt,
+//! session/cancel. Env knobs: `MOCK_ACP_UPDATES` (chunks per prompt),
+//! `MOCK_ACP_HANG` (never answer, for cancel), `MOCK_ACP_PID_FILE`.
 
 use std::io::{BufRead, Write};
 
@@ -21,6 +15,9 @@ pub fn run_mock_server() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1);
+    // When set, all chunks share one messageId (simulating a multi-chunk
+    // agent message) instead of getting a unique id each.
+    let same_msg = std::env::var("MOCK_ACP_SAME_MSG").is_ok();
     // Write own PID to a file so the hard-kill test can check the process
     // is dead after cancel. Best-effort — ignore errors.
     if let Ok(pid_file) = std::env::var("MOCK_ACP_PID_FILE") {
@@ -44,9 +41,7 @@ pub fn run_mock_server() {
         let params = v["params"].clone();
         match method.as_str() {
             "initialize" => {
-                let pv = params["protocolVersion"]
-                    .as_str()
-                    .unwrap_or("2025-03-26");
+                let pv = params["protocolVersion"].as_str().unwrap_or("2025-03-26");
                 send(
                     &mut out,
                     serde_json::json!({
@@ -81,7 +76,7 @@ pub fn run_mock_server() {
                             "update": {
                                 "sessionUpdate": "agent_message_chunk",
                                 "content": { "type": "text", "text": format!("mock output chunk {i}") },
-                                "messageId": format!("m{i}"),
+                                "messageId": if same_msg { "same-msg".to_string() } else { format!("m{i}") },
                             },
                         },
                     });
@@ -96,11 +91,17 @@ pub fn run_mock_server() {
                 );
             }
             "session/cancel" => {
-                send(&mut out, serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": {} }));
+                send(
+                    &mut out,
+                    serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
+                );
                 break;
             }
             "authenticate" => {
-                send(&mut out, serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": null }));
+                send(
+                    &mut out,
+                    serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": null }),
+                );
             }
             _ => {
                 if v["id"].is_number() {

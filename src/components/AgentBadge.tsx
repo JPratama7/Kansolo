@@ -1,13 +1,25 @@
-import { Show } from 'solid-js';
-import type { AgentRun } from '../db.ts';
+import { Show } from "solid-js";
+import type { AgentRun } from "../db.ts";
 
 /** Status → badge label + color classes. */
 const STATUS_BADGE: Record<string, { label: string; class: string }> = {
-  pending: { label: 'queued', class: 'bg-p-low/20 text-p-low border-p-low/40' },
-  running: { label: 'running', class: 'bg-p-med/20 text-p-med border-p-med/40 animate-pulse' },
-  completed: { label: 'done', class: 'bg-p-high/20 text-p-high border-p-high/40' },
-  failed: { label: 'failed', class: 'bg-p-urgent/20 text-p-urgent border-p-urgent/40' },
-  cancelled: { label: 'cancelled', class: 'bg-base/40 text-ink-secondary border-border-subtle' },
+  pending: { label: "queued", class: "bg-p-low/20 text-p-low border-p-low/40" },
+  running: {
+    label: "running",
+    class: "bg-p-med/20 text-p-med border-p-med/40 animate-pulse",
+  },
+  completed: {
+    label: "done",
+    class: "bg-p-high/20 text-p-high border-p-high/40",
+  },
+  failed: {
+    label: "failed",
+    class: "bg-p-urgent/20 text-p-urgent border-p-urgent/40",
+  },
+  cancelled: {
+    label: "cancelled",
+    class: "bg-base/40 text-ink-secondary border-border-subtle",
+  },
 };
 
 export interface AgentBadgeProps {
@@ -17,9 +29,7 @@ export interface AgentBadgeProps {
   onClick?: () => void;
 }
 
-/** Small status pill shown on cards that have (or had) an agent run.
- * Board polls `acp_list_active_runs` once and distributes state to badges
- * (decision 8/40). */
+/** Small status pill shown on cards that have (or had) an agent run. */
 export default function AgentBadge(props: AgentBadgeProps) {
   return (
     <Show when={props.run}>

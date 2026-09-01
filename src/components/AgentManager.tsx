@@ -1,17 +1,18 @@
-import { For, Show, createSignal, onMount } from 'solid-js';
-import { Portal } from 'solid-js/web';
-import { Dialog } from '@ark-ui/solid/dialog';
-import { toaster } from './ui/toaster.ts';
-import AgentRunPanel from './AgentRunPanel.tsx';
-import type { AgentRun } from '../types.ts';
+import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
+import { Portal } from "solid-js/web";
+import { Dialog } from "@ark-ui/solid/dialog";
+import { toaster } from "./ui/toaster.ts";
+import AgentRunPanel from "./AgentRunPanel.tsx";
+import type { AgentRun } from "../types.ts";
 import {
-  acpListRecentRuns,
   acpCancelRun,
+  acpDeleteRun,
+  acpErrorMessage,
+  acpListRecentRuns,
   acpMerge,
   acpRemoveWorktree,
-  acpErrorMessage,
   listCards,
-} from '../db.ts';
+} from "../db.ts";
 
 export interface AgentManagerProps {
   open: boolean;
@@ -19,11 +20,11 @@ export interface AgentManagerProps {
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  pending: 'Queued',
-  running: 'Running',
-  completed: 'Completed',
-  failed: 'Failed',
-  cancelled: 'Cancelled',
+  pending: "Queued",
+  running: "Running",
+  completed: "Completed",
+  failed: "Failed",
+  cancelled: "Cancelled",
 };
 
 const POLL_INTERVAL_MS = 3000;
@@ -40,34 +41,32 @@ export default function AgentManager(props: AgentManagerProps) {
   const [panelRun, setPanelRun] = createSignal<AgentRun | null>(null);
   const [panelOpen, setPanelOpen] = createSignal(false);
 
-  let pollTimer: ReturnType<typeof setInterval> | undefined;
-
   async function refresh() {
     try {
-      const [recent, cards] = await Promise.all([acpListRecentRuns(), listCards()]);
+      const [recent, cards] = await Promise.all([
+        acpListRecentRuns(),
+        listCards(),
+      ]);
       setRuns(recent);
       const titles: Record<string, string> = {};
       for (const c of cards) titles[c.id] = c.title;
       setCardTitles(titles);
     } catch (e) {
-      toaster.error({ title: 'Failed to load runs', description: acpErrorMessage(e) });
+      toaster.error({
+        title: "Failed to load runs",
+        description: acpErrorMessage(e),
+      });
     }
   }
 
-  onMount(() => {
-    void refresh();
-  });
-
-  // Poll while the manager is open so active runs update live.
-  function handleOpenChange(open: boolean) {
-    if (open) {
+  // Refresh + poll whenever the dialog opens; clean up when it closes.
+  createEffect(() => {
+    if (props.open) {
       void refresh();
-      pollTimer = setInterval(() => void refresh(), POLL_INTERVAL_MS);
-    } else {
-      clearInterval(pollTimer);
+      const id = setInterval(() => void refresh(), POLL_INTERVAL_MS);
+      onCleanup(() => clearInterval(id));
     }
-    props.onOpenChange(open);
-  }
+  });
 
   function openPanel(run: AgentRun) {
     setPanelRun(run);
@@ -78,10 +77,13 @@ export default function AgentManager(props: AgentManagerProps) {
     setBusyId(run.id);
     try {
       await acpCancelRun(run.id);
-      toaster.success({ title: 'Run cancelled' });
+      toaster.success({ title: "Run cancelled" });
       await refresh();
     } catch (e) {
-      toaster.error({ title: 'Cancel failed', description: acpErrorMessage(e) });
+      toaster.error({
+        title: "Cancel failed",
+        description: acpErrorMessage(e),
+      });
     } finally {
       setBusyId(null);
     }
@@ -91,11 +93,14 @@ export default function AgentManager(props: AgentManagerProps) {
     setBusyId(run.id);
     try {
       const result = await acpMerge(run.cardId);
-      if (result.success) toaster.success({ title: 'Merged successfully' });
-      else toaster.warning({ title: 'Merge conflicts', description: `${result.conflicts.length} file(s)` });
+      if (result.success) toaster.success({ title: "Merged successfully" });
+      else {toaster.warning({
+          title: "Merge conflicts",
+          description: `${result.conflicts.length} file(s)`,
+        });}
       await refresh();
     } catch (e) {
-      toaster.error({ title: 'Merge failed', description: acpErrorMessage(e) });
+      toaster.error({ title: "Merge failed", description: acpErrorMessage(e) });
     } finally {
       setBusyId(null);
     }
@@ -105,18 +110,39 @@ export default function AgentManager(props: AgentManagerProps) {
     setBusyId(run.id);
     try {
       await acpRemoveWorktree(run.cardId);
-      toaster.success({ title: 'Worktree removed' });
+      toaster.success({ title: "Worktree removed" });
       await refresh();
     } catch (e) {
-      toaster.error({ title: 'Remove failed', description: acpErrorMessage(e) });
+      toaster.error({
+        title: "Remove failed",
+        description: acpErrorMessage(e),
+      });
     } finally {
       setBusyId(null);
     }
   }
 
-  const isActive = (r: AgentRun) => r.status === 'pending' || r.status === 'running';
+  async function deleteRun(run: AgentRun) {
+    setBusyId(run.id);
+    try {
+      await acpDeleteRun(run.id);
+      toaster.success({ title: "Run removed" });
+      await refresh();
+    } catch (e) {
+      toaster.error({
+        title: "Remove failed",
+        description: acpErrorMessage(e),
+      });
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  const isActive = (r: AgentRun) =>
+    r.status === "pending" || r.status === "running";
   const isTerminal = (r: AgentRun) =>
-    r.status === 'completed' || r.status === 'failed' || r.status === 'cancelled';
+    r.status === "completed" || r.status === "failed" ||
+    r.status === "cancelled";
 
   return (
     <>
@@ -125,7 +151,7 @@ export default function AgentManager(props: AgentManagerProps) {
         lazyMount
         unmountOnExit
         closeOnEscape
-        onOpenChange={(e) => handleOpenChange(e.open)}
+        onOpenChange={(e) => props.onOpenChange(e.open)}
       >
         <Portal>
           <Dialog.Backdrop class="fixed inset-0 z-50 bg-black/50" />
@@ -137,7 +163,7 @@ export default function AgentManager(props: AgentManagerProps) {
                   type="button"
                   class="text-xl text-ink-secondary hover:text-ink leading-none px-1"
                   aria-label="Close"
-                  onClick={() => handleOpenChange(false)}
+                  onClick={() => props.onOpenChange(false)}
                 >
                   ×
                 </button>
@@ -145,16 +171,24 @@ export default function AgentManager(props: AgentManagerProps) {
               <div class="flex-1 min-h-0 overflow-y-auto board-scroll">
                 <Show
                   when={runs().length > 0}
-                  fallback={<p class="p-4 text-sm text-ink-secondary">No runs yet.</p>}
+                  fallback={
+                    <p class="p-4 text-sm text-ink-secondary">No runs yet.</p>
+                  }
                 >
                   <table class="w-full text-sm">
                     <thead class="sticky top-0 bg-surface border-b border-border-subtle text-xs text-ink-secondary uppercase tracking-wide">
                       <tr>
                         <th class="text-left font-semibold px-4 py-2">Card</th>
                         <th class="text-left font-semibold px-4 py-2">Agent</th>
-                        <th class="text-left font-semibold px-4 py-2">Status</th>
-                        <th class="text-left font-semibold px-4 py-2">Started</th>
-                        <th class="text-right font-semibold px-4 py-2">Actions</th>
+                        <th class="text-left font-semibold px-4 py-2">
+                          Status
+                        </th>
+                        <th class="text-left font-semibold px-4 py-2">
+                          Started
+                        </th>
+                        <th class="text-right font-semibold px-4 py-2">
+                          Actions
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
@@ -200,9 +234,17 @@ export default function AgentManager(props: AgentManagerProps) {
                                 </button>
                                 <button
                                   type="button"
-                                  class="text-xs px-2 py-1 rounded border border-border-subtle text-ink-secondary hover:text-ink transition-colors disabled:opacity-50"
+                                  class="text-xs px-2 py-1 rounded border border-border-subtle text-ink-secondary hover:text-ink transition-colors disabled:opacity-50 mr-1"
                                   disabled={busyId() === run.id}
                                   onClick={() => void removeWorktree(run)}
+                                >
+                                  Remove worktree
+                                </button>
+                                <button
+                                  type="button"
+                                  class="text-xs px-2 py-1 rounded border border-p-urgent/40 text-p-urgent hover:bg-p-urgent/10 transition-colors disabled:opacity-50"
+                                  disabled={busyId() === run.id}
+                                  onClick={() => void deleteRun(run)}
                                 >
                                   Remove
                                 </button>
