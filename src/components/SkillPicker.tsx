@@ -4,7 +4,7 @@ import type { SkillManifest } from "../db.ts";
 export interface SkillPickerProps {
   /** All available skills from disk (acp_list_skills). */
   available: SkillManifest[];
-  /** The agent's configured skill names. */
+  /** Skill names configured for this agent. */
   agentSkills: string[];
   /** Currently selected skill names (controlled). */
   selected: string[];
@@ -16,7 +16,7 @@ export interface SkillPickerProps {
  * checkboxes (pre-checked = all). Selected names passed to `acp_create_run`
  * as `skill_names`. If agent has no skills, picker is skipped. */
 export default function SkillPicker(props: SkillPickerProps) {
-  /** Filter available skills to only those in the agent's skill list. */
+  /** Filter available skills to those in the agent's skill list. */
   const agentSkillManifests = createMemo(() => {
     const map = new Map(props.available.map((s) => [s.name, s]));
     return props.agentSkills

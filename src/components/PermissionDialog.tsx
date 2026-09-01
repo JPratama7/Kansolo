@@ -6,8 +6,8 @@ import type { AcpUpdateEvent } from "../types.ts";
 import { safeListen } from "../event.ts";
 import { toaster } from "./ui/toaster.ts";
 
-/** One queued permission request awaiting user mediation. The `timeoutMs`
- * comes from the Rust payload when present, else from the
+/** Queued permission request awaiting user mediation. `timeoutMs` comes
+ * from the Rust payload when present, else from the
  * `acp_permission_timeout` setting (see `acpPermissionTimeoutMs`). */
 export interface PermissionQueueItem {
   runId: string;
@@ -44,9 +44,9 @@ export function dequeuePermission(requestId: string): void {
   syncHead();
 }
 
-/** Drop every queued request belonging to one run. Used when the user stops
- * a run from the permission dialog — without this, remaining requests from
- * the same run would keep popping up one after another. */
+/** Drop every queued request belonging to one run. Called when the user
+ * stops a run from the permission dialog — without this, remaining
+ * requests from the same run would keep popping up one after another. */
 export function dequeuePermissionsForRun(runId: string): void {
   for (let i = permissionQueue.length - 1; i >= 0; i--) {
     if (permissionQueue[i].runId === runId) permissionQueue.splice(i, 1);
@@ -68,7 +68,7 @@ export function clearPermissionQueue(): void {
 /** Permission mediation UI. Renders only the queue head — concurrent
  * requests from multiple runs are serialized by the module-level FIFO
  * store. The description is the structured tool summary (tool name +
- * truncated args) produced on the Rust side; it is rendered as plain text
+ * truncated args) produced on the Rust side; rendered as plain text
  * under an "untrusted agent content" label. The countdown reads
  * `timeoutMs` from the queue item (Rust payload or setting), not a
  * hardcoded constant. */
@@ -117,7 +117,7 @@ export default function PermissionDialog() {
         setRemaining(left);
         if (left === 0) {
           // Rust already auto-denied via PermissionTimeout; just drop the
-          // queue entry so the next request (if any) is revealed.
+          // queue entry so the next request (if any) reveals.
           dequeuePermission(item.requestId);
         }
       }, 1000);
@@ -149,9 +149,9 @@ export default function PermissionDialog() {
 
   /** Escape hatch for permission loops: an agent that keeps requesting
    * permissions (e.g. denied tool calls retried in a loop) would otherwise
-   * re-open this dialog forever. Stop the run and drop its queued requests.
-   * The modal backdrop blocks the panel's own stop button, so the dialog
-   * must offer this itself. */
+   * re-open this dialog forever. Stop the run and drop queued requests. The
+   * modal backdrop blocks the panel's own stop button, so the dialog must
+   * offer this itself. */
   async function stopRun() {
     const item = head();
     if (!item || stopping()) return;
