@@ -1,4 +1,4 @@
-import { test as base, expect, type Page } from '@playwright/test';
+import { expect, type Page, test as base } from "@playwright/test";
 
 /**
  * Tauri invoke mock.
@@ -18,7 +18,9 @@ import { test as base, expect, type Page } from '@playwright/test';
  * Unhandled commands return `undefined`.
  */
 
-export type InvokeHandler = (args: Record<string, unknown>) => unknown | Promise<unknown>;
+export type InvokeHandler = (
+  args: Record<string, unknown>,
+) => unknown | Promise<unknown>;
 export type InvokeHandlers = Record<string, InvokeHandler>;
 
 export interface TauriMock {
@@ -28,7 +30,10 @@ export interface TauriMock {
   setHandlers(next: InvokeHandlers): void;
 }
 
-async function installTauriMock(page: Page, handlers: InvokeHandlers): Promise<TauriMock> {
+async function installTauriMock(
+  page: Page,
+  handlers: InvokeHandlers,
+): Promise<TauriMock> {
   // The dispatcher runs in Node (via page.exposeFunction), so handler
   // closures over test-local state (e.g. an in-memory card store) survive —
   // something addInitScript's structured-clone serialization can't do, since
@@ -37,20 +42,24 @@ async function installTauriMock(page: Page, handlers: InvokeHandlers): Promise<T
   const calls: Array<[string, Record<string, unknown> | undefined]> = [];
   const live: { handlers: InvokeHandlers } = { handlers };
   await page.exposeFunction(
-    '__kansoloDispatch',
+    "__kansoloDispatch",
     (cmd: string, args?: Record<string, unknown>) => {
       calls.push([cmd, args]);
       const h = live.handlers[cmd];
       return h ? h(args ?? {}) : undefined;
     },
   );
-  await page.exposeFunction('__kansoloGetCalls', () => calls);
+  await page.exposeFunction("__kansoloGetCalls", () => calls);
   await page.addInitScript(() => {
-    (window as any).__TAURI_INTERNALS__ = (window as any).__TAURI_INTERNALS__ || {};
-    (window as any).__TAURI_INTERNALS__.invoke = (cmd: string, args?: unknown) =>
-      (window as any).__kansoloDispatch(cmd, args);
+    (window as any).__TAURI_INTERNALS__ = (window as any).__TAURI_INTERNALS__ ||
+      {};
+    (window as any).__TAURI_INTERNALS__.invoke = (
+      cmd: string,
+      args?: unknown,
+    ) => (window as any).__kansoloDispatch(cmd, args);
     // Also stub @tauri-apps/api/core's invoke fallback path.
-    (window as any).__TAURI_INVOKE__ = (window as any).__TAURI_INTERNALS__.invoke;
+    (window as any).__TAURI_INVOKE__ =
+      (window as any).__TAURI_INTERNALS__.invoke;
   });
 
   return {
@@ -62,14 +71,22 @@ async function installTauriMock(page: Page, handlers: InvokeHandlers): Promise<T
 }
 
 /** Helper to read recorded invoke calls from the page. */
-export async function readInvokeCalls(page: Page): Promise<Array<[string, unknown]>> {
-  return page.evaluate(() => (window as any).__kansoloGetCalls()) as Promise<Array<[string, unknown]>>;
+export async function readInvokeCalls(
+  page: Page,
+): Promise<Array<[string, unknown]>> {
+  return page.evaluate(() => (window as any).__kansoloGetCalls()) as Promise<
+    Array<[string, unknown]>
+  >;
 }
 
 /** Test fixture that exposes a TauriMock via `useTauri`. */
-export const test = base.extend<{ useTauri: (handlers?: InvokeHandlers) => Promise<TauriMock> }>({
+export const test = base.extend<
+  { useTauri: (handlers?: InvokeHandlers) => Promise<TauriMock> }
+>({
   useTauri: async ({ page }, use) => {
-    await use((handlers: InvokeHandlers = {}) => installTauriMock(page, handlers));
+    await use((handlers: InvokeHandlers = {}) =>
+      installTauriMock(page, handlers)
+    );
   },
 });
 
