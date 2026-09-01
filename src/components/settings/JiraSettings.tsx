@@ -42,7 +42,7 @@ function splitStatuses(input: string): string[] {
 }
 
 /** Coerce a stored config value to a string; fall back to '' when absent. */
-function cfgString(config: Record<string, unknown>, key: string): string {
+function configString(config: Record<string, unknown>, key: string): string {
   const v = config[key];
   return typeof v === "string" ? v : "";
 }
@@ -74,13 +74,13 @@ export default function JiraSettings(props: JiraSettingsProps) {
   }
 
   onMount(() => {
-    const cfg = props.instance?.config ?? {};
-    setBaseUrl(cfgString(cfg, "base_url"));
-    setEmail(cfgString(cfg, "email"));
-    setToken(cfgString(cfg, "token"));
+    const config = props.instance?.config ?? {};
+    setBaseUrl(configString(config, "base_url"));
+    setEmail(configString(config, "email"));
+    setToken(configString(config, "token"));
     // `jql_parts` is stored as a JSON sub-object; parseJqlParts expects a
     // string, so stringify first when it's an object.
-    const rawParts = cfg["jql_parts"];
+    const rawParts = config["jql_parts"];
     const partsStr = typeof rawParts === "string"
       ? rawParts
       : rawParts !== undefined
@@ -95,8 +95,8 @@ export default function JiraSettings(props: JiraSettingsProps) {
     setDoneStatuses(mapping.done.join(", "));
   });
 
-  // Clear any in-flight debounce timer when the component unmounts so the
-  // async preview callback can't fire after teardown.
+  // Clear any in-flight debounce timer on unmount so the async preview
+  // callback can't fire after teardown.
   onCleanup(() => {
     if (previewTimer) clearTimeout(previewTimer);
   });
