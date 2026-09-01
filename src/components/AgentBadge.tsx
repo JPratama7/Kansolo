@@ -1,25 +1,13 @@
 import { Show } from "solid-js";
 import type { AgentRun } from "../db.ts";
 
-/** Status → badge label + color classes. */
+/** Status → agent label + color. */
 const STATUS_BADGE: Record<string, { label: string; class: string }> = {
-  pending: { label: "queued", class: "bg-p-low/20 text-p-low border-p-low/40" },
-  running: {
-    label: "running",
-    class: "bg-p-med/20 text-p-med border-p-med/40 animate-pulse",
-  },
-  completed: {
-    label: "done",
-    class: "bg-p-high/20 text-p-high border-p-high/40",
-  },
-  failed: {
-    label: "failed",
-    class: "bg-p-urgent/20 text-p-urgent border-p-urgent/40",
-  },
-  cancelled: {
-    label: "cancelled",
-    class: "bg-base/40 text-ink-secondary border-border-subtle",
-  },
+  pending: { label: "queued", class: "text-ink-muted" },
+  running: { label: "running", class: "text-accent" },
+  completed: { label: "done", class: "text-ink-secondary" },
+  failed: { label: "failed", class: "text-ink-secondary" },
+  cancelled: { label: "cancelled", class: "text-ink-muted" },
 };
 
 export interface AgentBadgeProps {
@@ -38,14 +26,14 @@ export default function AgentBadge(props: AgentBadgeProps) {
         return (
           <button
             type="button"
-            class={`text-[10px] font-semibold uppercase tracking-wide rounded border px-1.5 py-0.5 transition-colors hover:brightness-110 ${badge.class}`}
+            class={`text-[0.65rem] font-mono font-semibold ${badge.class} hover:text-accent-hover transition-colors`}
             onClick={(e) => {
               e.stopPropagation();
               props.onClick?.();
             }}
             title={`Agent: ${run().agentName} — ${run().status}`}
           >
-            {badge.label}
+            Agent {badge.label}
           </button>
         );
       }}

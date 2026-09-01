@@ -1,13 +1,55 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500;600&family=JetBrains+Mono&display=swap');
 @import "tailwindcss";
 
 @theme {
-  /* Surfaces — layered elevation */
+  /* Surfaces — editorial light */
+  --color-base: #fafafa;
+  --color-surface: #ffffff;
+  --color-elevated: #f4f4f4;
+  --color-hover: #f0f0f0;
+  --color-border: #e5e5e5;
+  --color-border-subtle: #eeeeee;
+  --color-card-border: #eeeeee;
+
+  /* Text */
+  --color-ink: #111111;
+  --color-ink-secondary: #6b6b6b;
+  --color-ink-muted: #9f9f9f;
+
+  /* Accent */
+  --color-accent: #0d7377;
+  --color-accent-hover: #0a5f63;
+
+  /* Column accents */
+  --color-col-backlog: #a8dadc;
+  --color-col-ongoing: #f4a261;
+  --color-col-done: #2a9d8f;
+
+  /* Priority */
+  --color-p-low: #2a9d8f;
+  --color-p-med: #457b9d;
+  --color-p-high: #f4a261;
+  --color-p-urgent: #e63946;
+
+  /* Typography */
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "DM Serif Display", ui-serif, Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --radius-card: 8px;
+  --radius-list: 12px;
+}
+
+/* Dark theme token overrides. */
+html.dark {
+  /* Surfaces */
   --color-base: #0f172a;
   --color-surface: #1e293b;
   --color-elevated: #334155;
   --color-hover: #3e4c66;
   --color-border: #475569;
   --color-border-subtle: #334155;
+  --color-card-border: #334155;
 
   /* Text */
   --color-ink: #f1f5f9;
@@ -28,9 +70,14 @@
   --color-p-med: #eab308;
   --color-p-high: #f97316;
   --color-p-urgent: #ef4444;
+}
 
-  --radius-card: 8px;
-  --radius-list: 12px;
+html {
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
 }
 
 html,
@@ -41,14 +88,10 @@ body,
 
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-family: var(--font-sans);
   color: var(--color-ink);
   background: var(--color-base);
   -webkit-font-smoothing: antialiased;
-  /* Tell the browser this app is dark so native form controls (select
-     popups, date pickers, scrollbars) render with a dark palette instead
-     of the OS default light — keeps dropdown option text visible. */
-  color-scheme: dark;
   /* Prevent double-tap zoom delay on touch devices. */
   touch-action: manipulation;
   /* Intentional: transparent tap highlight lets hover/active states show
@@ -281,6 +324,16 @@ select option:hover {
   border-radius: var(--radius-card) var(--radius-card) 0 0;
 }
 
+/* Priority bar — 4px left edge encoding priority. */
+.priority-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 100%;
+  border-radius: var(--radius-card) 0 0 var(--radius-card);
+}
+
 /* Column accent — thin top bar encoding column identity */
 .col-accent {
   height: 3px;
@@ -450,11 +503,11 @@ select option:hover {
 
 /* Metadata chip — mono source ref / tree label. */
 .metadata-chip {
-  font-family: ui-monospace, monospace;
-  font-size: 0.625rem;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
   color: var(--color-ink-secondary);
-  background: var(--color-base);
-  border-radius: 4px;
+  background: var(--color-elevated);
+  border-radius: 3px;
   padding: 0.05rem 0.35rem;
 }
 
@@ -621,12 +674,25 @@ select option:hover {
   background: var(--color-accent);
   animation: agent-dot-breathe 1.6s ease-in-out infinite;
 }
-.agent-dot--ok { background: var(--color-col-done); }
-.agent-dot--err { background: var(--color-p-urgent); }
-.agent-dot--muted { background: var(--color-ink-muted); }
+.agent-dot--ok {
+  background: var(--color-col-done);
+}
+.agent-dot--err {
+  background: var(--color-p-urgent);
+}
+.agent-dot--muted {
+  background: var(--color-ink-muted);
+}
 @keyframes agent-dot-breathe {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.45; transform: scale(0.8); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.8);
+  }
 }
 .agent-chip {
   font-family: ui-monospace, monospace;
@@ -704,9 +770,15 @@ select option:hover {
   font-weight: 600;
   padding: 0.3rem 0;
 }
-.agent-status--ok { color: var(--color-col-done); }
-.agent-status--err { color: var(--color-p-urgent); }
-.agent-status--muted { color: var(--color-ink-muted); }
+.agent-status--ok {
+  color: var(--color-col-done);
+}
+.agent-status--err {
+  color: var(--color-p-urgent);
+}
+.agent-status--muted {
+  color: var(--color-ink-muted);
+}
 .agent-perm {
   font-size: 0.72rem;
   color: var(--color-p-med);
@@ -841,9 +913,13 @@ select option:hover {
   padding: 0.4rem 0;
 }
 @media (prefers-reduced-motion: reduce) {
-  .agent-dot--live { animation: none; }
+  .agent-dot--live {
+    animation: none;
+  }
   .agent-composer-pill,
   .agent-send,
   .agent-stop,
-  .agent-actionbar button { transition: none; }
+  .agent-actionbar button {
+    transition: none;
+  }
 }

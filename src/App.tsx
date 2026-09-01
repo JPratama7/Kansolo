@@ -1,4 +1,5 @@
 import { createSignal, onMount, Show } from "solid-js";
+import { initTheme } from "./theme.ts";
 import { Portal } from "solid-js/web";
 import { Toast, Toaster } from "@ark-ui/solid/toast";
 import Board, { reload } from "./components/Board.tsx";
@@ -58,6 +59,7 @@ function App() {
 
   onMount(async () => {
     setLastSynced(await getSetting("last_synced_at"));
+    void initTheme();
   });
 
   /** Sync a batch of sources; pauses at the first conflict and stashes the rest for resume. */
@@ -188,7 +190,7 @@ function App() {
       >
         Skip to board
       </a>
-      <header class="flex items-center justify-between px-3 py-2 bg-surface border-b border-border-subtle text-ink safe-top">
+      <header class="flex items-center justify-between px-6 py-4 bg-base border-b border-rule text-ink safe-top">
         <div class="flex items-center gap-2 min-w-0">
           <img
             src="/kansolo-icon.svg"
@@ -197,7 +199,7 @@ function App() {
             height={24}
             class="w-6 h-6 shrink-0"
           />
-          <h1 class="text-base font-bold tracking-tight truncate text-white">
+          <h1 class="font-serif text-[1.6rem] text-ink truncate">
             Kansolo
           </h1>
           {lastSynced() && (
@@ -210,13 +212,13 @@ function App() {
           <button
             type="button"
             data-testid="sync-button"
-            class="px-3 py-1.5 text-sm font-medium rounded bg-accent hover:bg-accent-hover text-base transition-colors disabled:opacity-50"
+            class="px-3 py-2 text-[0.8rem] font-medium rounded border border-rule text-ink hover:bg-elevated transition-colors disabled:opacity-50"
             disabled={syncing()}
             onClick={() => void handleSync()}
           >
             <Show when={syncing()}>
               <span
-                class="inline-block w-3 h-3 mr-1.5 align-middle border-2 border-base/40 border-t-base rounded-full animate-spin"
+                class="inline-block w-3 h-3 mr-1.5 align-middle border-2 border-ink/30 border-t-ink rounded-full animate-spin"
                 aria-hidden="true"
               />
             </Show>
@@ -227,7 +229,7 @@ function App() {
           </span>
           <button
             type="button"
-            class="px-3 py-1.5 text-sm font-medium rounded bg-elevated hover:bg-hover text-ink transition-colors disabled:opacity-50"
+            class="px-3 py-2 text-[0.8rem] font-medium rounded border border-rule text-ink hover:bg-elevated transition-colors disabled:opacity-50"
             disabled={syncing()}
             onClick={() => setClearVisible(true)}
           >
@@ -235,14 +237,14 @@ function App() {
           </button>
           <button
             type="button"
-            class="px-3 py-1.5 text-sm font-medium rounded bg-elevated hover:bg-hover text-ink transition-colors"
+            class="px-3 py-2 text-[0.8rem] font-medium rounded border border-rule text-ink hover:bg-elevated transition-colors"
             onClick={() => setManagerVisible(true)}
           >
             Workspaces
           </button>
           <button
             type="button"
-            class="px-3 py-1.5 text-sm font-medium rounded bg-elevated hover:bg-hover text-ink transition-colors"
+            class="px-3 py-2 text-[0.8rem] font-medium rounded border border-rule text-ink hover:bg-elevated transition-colors"
             onClick={() => setSettingsVisible(!settingsVisible())}
           >
             Settings

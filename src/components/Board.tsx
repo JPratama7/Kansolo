@@ -19,9 +19,9 @@ import { Menu, useMenu } from "@ark-ui/solid/menu";
 import { invoke } from "@tauri-apps/api/core";
 import { toaster } from "./ui/toaster.ts";
 import type {
+  AcpActiveRunsChangedEvent,
   Agent,
   AgentRun,
-  AcpActiveRunsChangedEvent,
   ColumnId,
   KanbanCard,
   Priority,
@@ -83,42 +83,37 @@ function CardDragOverlay(props: { treeSources: () => TreeSource[] }) {
     return id ? state.draggables[id]?.data : undefined;
   };
   return (
-    <DragOverlay class="trello-card is-drag-overlay bg-elevated rounded-[var(--radius-card)] border border-border-subtle shadow-2xl">
+    <DragOverlay class="trello-card is-drag-overlay relative bg-surface rounded-[var(--radius-card)] border border-card-border shadow-2xl">
       <Show when={activeCard()}>
         {(card) => (
           <>
             <div
-              class={`priority-strip ${PRIORITY_STRIP[card().priority]}`}
+              class={`priority-bar ${PRIORITY_STRIP[card().priority]}`}
               aria-hidden="true"
             />
-            <div class="px-3 py-2">
-              <p class="text-sm text-ink leading-snug">{card().title}</p>
+            <div class="p-4">
+              <p class="text-sm font-semibold text-ink leading-snug">
+                {card().title}
+              </p>
               <Show when={card().description}>
                 <Markdown
                   content={card().description}
-                  class="md-preview text-xs text-ink-secondary mt-1 line-clamp-2"
+                  class="md-preview text-[0.82rem] text-ink-secondary mt-1 line-clamp-2 leading-snug"
                 />
               </Show>
               <Show when={card().treeSourceId}>
                 <p
-                  class="text-[10px] font-mono text-ink-muted mt-1 truncate"
+                  class="text-[0.65rem] font-mono text-ink-muted mt-2 truncate"
                   title={card().treeSourceId}
                 >
                   {props.treeSources().find((s) => s.id === card().treeSourceId)
                     ?.label ?? card().treeSourceId}
                 </p>
               </Show>
-              <div class="flex items-center justify-between gap-2 mt-2">
-                <div class="flex items-center gap-1.5 min-w-0">
-                  <span class="text-[10px] font-semibold uppercase tracking-wide text-ink-secondary">
-                    {card().priority}
-                  </span>
-                  {card().source !== "local" && card().sourceRef && (
-                    <span class="text-[10px] font-mono text-ink-secondary bg-base/60 rounded px-1 py-0.5 truncate">
-                      {card().sourceRef}
-                    </span>
-                  )}
-                </div>
+              <div class="flex items-center gap-2 mt-3">
+                {card().source !== "local" && card().sourceRef && (
+                  <span class="metadata-chip">{card().sourceRef}</span>
+                )}
               </div>
             </div>
           </>
@@ -215,7 +210,9 @@ export default function Board() {
     const unlistenPromise = safeListen<AcpActiveRunsChangedEvent>(
       "acp:active_runs_changed",
       (event) => {
-        applyActiveRuns(Array.isArray(event.payload.runs) ? event.payload.runs : []);
+        applyActiveRuns(
+          Array.isArray(event.payload.runs) ? event.payload.runs : [],
+        );
       },
     );
 
@@ -603,7 +600,7 @@ export default function Board() {
       <DragDropSensors>
         <main
           id="main-board"
-          class="board-scroll flex-1 flex gap-3 p-3 overflow-y-auto bg-base"
+          class="board-scroll flex-1 grid grid-cols-1 sm:grid-cols-3 gap-8 p-4 sm:p-8 overflow-y-auto bg-base"
         >
           <For each={COLUMNS}>
             {(column) => (

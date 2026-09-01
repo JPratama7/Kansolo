@@ -40,6 +40,7 @@ import AgentRegistry from "./settings/AgentRegistry.tsx";
 import AcpSettings from "./settings/AcpSettings.tsx";
 import { ArkSelect } from "./ui/ArkSelect.tsx";
 import { toaster } from "./ui/toaster.ts";
+import { currentTheme, setTheme, type Theme } from "../theme.ts";
 
 interface SettingsProps {
   open: boolean;
@@ -651,6 +652,26 @@ export default function Settings(props: SettingsProps) {
                             />
                             Close button hides to tray instead of quitting
                           </label>
+                          <div class="flex flex-col gap-1 mt-3">
+                            <label
+                              class="text-xs font-semibold text-ink-secondary"
+                              for="settings-theme"
+                            >
+                              Theme
+                            </label>
+                            <select
+                              id="settings-theme"
+                              name="theme"
+                              class={INPUT}
+                              value={currentTheme()}
+                              onChange={(e) =>
+                                setTheme(e.currentTarget.value as Theme)}
+                            >
+                              <option value="light">Light</option>
+                              <option value="dark">Dark</option>
+                              <option value="system">System</option>
+                            </select>
+                          </div>
                         </fieldset>
                       )}
 
@@ -692,7 +713,14 @@ export default function Settings(props: SettingsProps) {
                                 value={mcpPort()}
                                 onInput={(e) =>
                                   setMcpPort(
-                                    Math.min(65535, Math.max(1, parseInt(e.currentTarget.value, 10) || 27816)),
+                                    Math.min(
+                                      65535,
+                                      Math.max(
+                                        1,
+                                        parseInt(e.currentTarget.value, 10) ||
+                                          27816,
+                                      ),
+                                    ),
                                   )}
                               />
                             </div>
