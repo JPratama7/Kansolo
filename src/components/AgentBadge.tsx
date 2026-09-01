@@ -17,7 +17,7 @@ export interface AgentBadgeProps {
   onClick?: () => void;
 }
 
-/** Small status pill shown on cards that have (or had) an agent run. */
+/** Status pill shown on cards that have (or had) an agent run. */
 export default function AgentBadge(props: AgentBadgeProps) {
   return (
     <Show when={props.run}>

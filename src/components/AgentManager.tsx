@@ -59,7 +59,7 @@ export default function AgentManager(props: AgentManagerProps) {
     }
   }
 
-  // Refresh + poll whenever the dialog opens; clean up when it closes.
+  // Refresh + poll whenever the dialog opens; clean up on close.
   createEffect(() => {
     if (props.open) {
       void refresh();
