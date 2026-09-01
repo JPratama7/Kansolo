@@ -22,8 +22,8 @@ pub fn run() {
         .manage(runner::RunnerState::default())
         .on_window_event(|window, event| {
             // Intercept the close button: when `close_to_tray` is enabled (the
-            // default), hide the window instead of letting the app quit. The
-            // user quits via the tray menu's "Quit" item.
+            // default), hide the window instead of quitting. The user quits
+            // via the tray menu's "Quit" item.
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let app = window.app_handle();
                 let close_to_tray = read_setting(app, "close_to_tray")
@@ -39,7 +39,7 @@ pub fn run() {
             // Run DB migrations before anything else touches the database.
             let conn = db::open_db(app.handle())?;
             db::run_migrations(&conn)?;
-            // Reap stale active runs left over from a crashed/killed tasker
+            // Reap stale active runs left by a crashed/killed tasker
             // (fire-and-forget — best-effort, never blocks startup).
             if let Err(e) = runner::cleanup_dangling(&conn) {
                 eprintln!("cleanup_dangling on startup failed: {e}");
@@ -137,8 +137,8 @@ pub fn read_setting<R: tauri::Runtime>(app: &tauri::AppHandle<R>, key: &str) -> 
     if !db_path.exists() {
         return None;
     }
-    // Use the shared opener so WAL + busy_timeout + FK pragmas are applied
-    // consistently with the rest of the app (avoids locked/FK-disabled reads).
+    // Use the shared opener so WAL + busy_timeout + FK pragmas match the
+    // rest of the app (avoids locked/FK-disabled reads).
     let conn = db::open_db_path(&db_path).ok()?;
     conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
         r.get::<_, String>(0)
