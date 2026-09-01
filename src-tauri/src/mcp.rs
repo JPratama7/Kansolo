@@ -43,8 +43,8 @@ fn read_mcp_token(db_path: &PathBuf) -> Option<String> {
 }
 
 /// Load the persisted MCP bearer token, or generate + persist a fresh one.
-/// The token is a UUID v4 string — random enough for a local-only bearer
-/// secret. Lives entirely in `mcp.rs` (no `lib.rs` involvement).
+/// UUID v4 is random enough for a local-only bearer secret. Kept in `mcp.rs`
+/// only (no `lib.rs` involvement).
 fn load_or_create_token(db_path: &PathBuf) -> Result<String, String> {
     if let Some(t) = read_mcp_token(db_path) {
         return Ok(t);
@@ -84,8 +84,8 @@ async fn require_bearer(
     }
 }
 
-/// A running MCP server instance: the spawned axum task plus the token used to
-/// ask it to stop gracefully.
+/// Active MCP server: the spawned axum task plus the token that stops it
+/// gracefully.
 struct McpHandle {
     join: tokio::task::JoinHandle<()>,
     cancel: CancellationToken,
@@ -114,14 +114,14 @@ pub struct McpStatus {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct GetCardParams {
-    /// The card id (UUID).
+    /// Card id (UUID).
     #[schemars(description = "The card id (UUID).")]
     id: String,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct MoveCardParams {
-    /// The card id (UUID).
+    /// Card id (UUID).
     #[schemars(description = "The card id (UUID).")]
     id: String,
     /// Target column: `backlog`, `ongoing`, or `done`.
@@ -136,7 +136,7 @@ struct MoveCardParams {
 // MCP service
 // ---------------------------------------------------------------------------
 
-/// The MCP service handler. Holds the DB path and the rmcp tool router.
+/// MCP service handler. Holds the DB path and the rmcp tool router.
 #[derive(Clone)]
 struct KansoloMcp {
     db_path: Arc<PathBuf>,
@@ -487,7 +487,7 @@ mod tests {
         String::from_utf8_lossy(&buf).to_string()
     }
 
-    /// The MCP endpoint must reject unauthenticated requests with 401 and
+    /// MCP endpoint must reject unauthenticated requests with 401 and
     /// accept only the correct bearer token.
     #[tokio::test]
     async fn mcp_request_without_token_is_401() {
