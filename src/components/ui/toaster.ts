@@ -1,6 +1,6 @@
 import { createToaster } from "@ark-ui/solid/toast";
 
-/** Single app-wide toaster. Confirmation toasts use `duration: Infinity`. */
+/** App-wide toaster. Confirmation toasts use `duration: Infinity`. */
 export const toaster = createToaster({
   placement: "bottom-end",
   max: 5,
