@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 use crate::db::Card;
 use crate::sync::FieldConflict;
 
-/// A card as returned by a `SourceProvider` before status/priority mapping
-/// is applied. `source_ref` is the provider-native id (Jira key, GitHub
-/// issue number, etc.); `status_name`/`priority_name` are the raw,
-/// unmapped strings reported by the upstream system.
+/// Card from a `SourceProvider` before status/priority mapping. `source_ref`
+/// is the provider-native id (Jira key, GitHub issue number, etc.);
+/// `status_name`/`priority_name` are the raw, unmapped strings from the
+/// upstream system.
 #[derive(Debug, Clone)]
 pub struct RawCard {
     pub source_ref: String,
@@ -24,10 +24,9 @@ pub struct RawCard {
 
 /// Plugin seam for an external card source (Jira, GitHub, etc.).
 ///
-/// Each provider implements this trait and registers itself in `registry()`.
-/// The frontend supplies a per-source settings UI component, so the trait
-/// intentionally exposes no `config_schema` method — only the data needed to
-/// list, fetch, and (optionally) discover selectable options for a source.
+/// Providers implement this trait and register in `registry()`. The frontend
+/// handles per-source settings UI, so the trait intentionally exposes no
+/// `config_schema` — only what's needed to list, fetch, and discover options.
 #[async_trait]
 pub trait SourceProvider: Send + Sync {
     /// Stable identifier persisted on `SourceInstance.source_type`
@@ -52,18 +51,17 @@ pub trait SourceProvider: Send + Sync {
     }
 }
 
-/// Metadata for one registered source type, returned to the frontend so it
-/// can render the "Add source" picker without knowing the providers ahead
-/// of time.
+/// Describes one registered source type so the "Add source" picker can be
+/// rendered without knowing providers ahead of time.
 #[derive(Debug, Clone, Serialize)]
 pub struct SourceTypeMeta {
     pub source_type: String,
     pub label: String,
 }
 
-/// A single card whose local copy and remote snapshot disagree on one or
-/// more fields. `conflicts` lists the divergent fields; the frontend asks
-/// the user to resolve each via a `ConflictResolution`.
+/// Card whose local copy and remote snapshot disagree on one or more fields.
+/// `conflicts` lists the divergent fields; the frontend asks the user to
+/// resolve each via a `ConflictResolution`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncConflict {
@@ -73,9 +71,8 @@ pub struct SyncConflict {
     pub remote: Card,
 }
 
-/// Outcome of a sync run: conflicts needing user resolution, statuses the
-/// user's mapping doesn't cover (so the UI can prompt to extend it), and
-/// the ISO-8601 timestamp the sync completed.
+/// Sync run result: conflicts needing resolution, unmapped statuses the UI
+/// can prompt to extend, and the ISO-8601 timestamp.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncResult {
@@ -96,8 +93,8 @@ pub struct ConflictResolution {
     pub choices: HashMap<String, String>,
 }
 
-/// Result of fetching + mapping cards from a source: the mapped cards plus
-/// any upstream statuses the user's mapping doesn't cover.
+/// Fetch and map cards from a source, returning mapped cards plus any
+/// unmapped upstream statuses.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FetchResult {
@@ -577,7 +574,7 @@ mod tests {
         );
         // No pending conflicts persisted.
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM pending_conflicts"), 0);
-        // The pre-existing row (inserted outside the tx) survives.
+        // Pre-existing row (inserted outside the tx) survives.
         assert_eq!(
             count(
                 &conn,

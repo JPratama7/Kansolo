@@ -898,9 +898,9 @@ mod tests {
     }
 
     /// Jira Cloud signals more pages with an opaque `nextPageToken` cursor.
-    /// This synthesizes a two-issue page carrying a token and asserts the
-    /// parser surfaces the cursor. An empty token is treated as "no next page"
-    /// so a misbehaving server can't loop us.
+    /// Synthesize a two-issue page with a token and assert the parser surfaces
+    /// it. An empty token means "no next page" so a misbehaving server can't
+    /// loop us.
     #[test]
     fn parses_next_page_token() {
         let page = r#"{
@@ -917,7 +917,7 @@ mod tests {
         assert_eq!(cards[1].source_ref, "PROJ-4");
         assert_eq!(next_token.as_deref(), Some("abc 123/=="));
 
-        // An empty nextPageToken is normalized to None — no extra page fetch.
+        // Empty `nextPageToken` becomes `None`; no extra page fetch.
         let empty_token = r#"{
             "nextPageToken": "",
             "issues": [{ "key": "PROJ-5", "fields": { "summary": "Last", "status": {} } }]
