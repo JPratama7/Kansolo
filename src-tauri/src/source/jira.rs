@@ -2,7 +2,6 @@
 //!
 //! Handles HTTP, ADF→Markdown parsing, project discovery, and JQL building.
 
-use base64::Engine as _;
 use serde::Deserialize;
 
 use super::{RawCard, SourceProvider};
@@ -390,30 +389,6 @@ fn list_to_md(content: Option<&serde_json::Value>, ordered: bool, depth: usize) 
         .join("\n")
 }
 
-/// Build the `GET /rest/api/3/search/jql` URL. Tolerates a user-pasted
-/// scheme and trailing slash on `base_url`; percent-encodes the JQL. When
-/// `page_token` is `Some`, appends `&nextPageToken=...` to fetch the next
-/// page of results from Jira Cloud's cursor-paginated search endpoint.
-fn build_search_url(base_url: &str, jql: &str, page_token: Option<&str>) -> String {
-    let host = normalize_host(base_url);
-    let encoded_jql = urlencoding::encode(jql);
-    let mut url = format!(
-        "https://{host}/rest/api/3/search/jql?jql={encoded_jql}&fields=key,summary,status,description,priority&maxResults=100"
-    );
-    if let Some(token) = page_token {
-        url.push_str("&nextPageToken=");
-        url.push_str(&urlencoding::encode(token));
-    }
-    url
-}
-
-/// Build the `GET /rest/api/3/project` URL. Same host normalization as
-/// [`build_search_url`]; no JQL to encode.
-fn build_projects_url(base_url: &str) -> String {
-    let host = normalize_host(base_url);
-    format!("https://{host}/rest/api/3/project")
-}
-
 /// Strip scheme + trailing slash from `base_url`, returning the bare host.
 /// Upgrades `http://` to `https://` by discarding the scheme entirely.
 fn normalize_host(base_url: &str) -> String {
@@ -443,16 +418,6 @@ fn validate_base_url(base_url: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Build a `Basic <base64(email:token)>` header value. The token never
-/// appears in plaintext in the result.
-fn basic_auth_header(email: &str, token: &str) -> String {
-    let credentials = format!("{email}:{token}");
-    format!(
-        "Basic {}",
-        base64::engine::general_purpose::STANDARD.encode(credentials.as_bytes())
-    )
-}
-
 /// Read a string field from a JSON config object, returning a descriptive
 /// error if it's missing or not a string. Centralizes the per-field
 /// validation so [`JiraSource::fetch_raw`] stays readable.
@@ -470,42 +435,57 @@ fn config_string(config: &serde_json::Value, field: &str) -> Result<String, Stri
     Ok(s.to_string())
 }
 
-/// Fetch one search page and parse it into `(cards, next_page_token)`. The
-/// full URL (including encoded JQL) is logged to stderr on transport failure
-/// but never surfaced to the caller — error messages stay free of the URL so
-/// credentials embedded in the query string can't leak through the UI.
-async fn fetch_search_page(
-    client: &reqwest::Client,
-    url: &str,
-    authorization: &str,
-) -> Result<(Vec<RawCard>, Option<String>), String> {
-    let response = client
-        .get(url)
-        .header(reqwest::header::ACCEPT, "application/json")
-        .header(reqwest::header::AUTHORIZATION, authorization)
-        .send()
-        .await
-        .map_err(|e| {
-            eprintln!("Jira search request to {url} failed: {e}");
-            format!("Could not reach the Jira server: {e}")
-        })?;
+/// Generic GET helper: sends the request, checks status, returns body text.
+async fn fetch_text(
+    req: reqwest::RequestBuilder,
+    url_for_log: &str,
+    endpoint: &str,
+) -> Result<String, String> {
+    let response = req.send().await.map_err(|e| {
+        eprintln!("Jira {endpoint} request to {url_for_log} failed: {e}");
+        format!("Could not reach the Jira server: {e}")
+    })?;
 
     let status = response.status();
     if !status.is_success() {
         // Deliberately discard the body so credentials or tokens can never leak.
         let hint = match status.as_u16() {
             401 | 403 => "check your credentials and permissions.",
-            410 => "the Jira search endpoint was removed — update the app.",
+            410 => "the Jira endpoint was removed — update the app.",
             _ => "see Jira API docs for this status code.",
         };
         return Err(format!("Jira API error {status}: {hint}"));
     }
 
-    let body = response
+    response
         .text()
         .await
-        .map_err(|_| "Jira responded, but the body could not be read.".to_string())?;
+        .map_err(|_| "Jira responded, but the body could not be read.".to_string())
+}
 
+/// Fetch one search page and parse it into `(cards, next_page_token)`.
+async fn fetch_search_page(
+    client: &reqwest::Client,
+    base_url: &str,
+    jql: &str,
+    page_token: Option<&str>,
+    email: &str,
+    token: &str,
+) -> Result<(Vec<RawCard>, Option<String>), String> {
+    let host = normalize_host(base_url);
+    let url = format!("https://{host}/rest/api/3/search/jql");
+    let mut req = client
+        .get(&url)
+        .basic_auth(email, Some(token))
+        .query(&[
+            ("jql", jql),
+            ("fields", "key,summary,status,description,priority"),
+            ("maxResults", "100"),
+        ]);
+    if let Some(t) = page_token {
+        req = req.query(&[("nextPageToken", t)]);
+    }
+    let body = fetch_text(req, &url, "search").await?;
     parse_search_response(&body)
 }
 
@@ -543,7 +523,6 @@ impl SourceProvider for JiraSource {
             );
         }
 
-        let authorization = basic_auth_header(&email, &token);
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
@@ -551,15 +530,20 @@ impl SourceProvider for JiraSource {
 
         // Jira Cloud paginates search via an opaque `nextPageToken` cursor.
         // Loop until a page returns no token, capping at 50 pages so a
-        // misbehaving server can't trap us in an endless cursor cycle. The
-        // cursor is threaded through `build_search_url` so the URL shape for
-        // each page is unit-testable without network.
+        // misbehaving server can't trap us in an endless cursor cycle.
         const MAX_PAGES: usize = 50;
         let mut all_cards: Vec<RawCard> = Vec::new();
         let mut page_token: Option<String> = None;
         for _ in 0..MAX_PAGES {
-            let url = build_search_url(&base_url, &jql, page_token.as_deref());
-            let (cards, next_token) = fetch_search_page(&client, &url, &authorization).await?;
+            let (cards, next_token) = fetch_search_page(
+                &client,
+                &base_url,
+                &jql,
+                page_token.as_deref(),
+                &email,
+                &token,
+            )
+            .await?;
             all_cards.extend(cards);
             match next_token {
                 Some(t) => page_token = Some(t),
@@ -575,37 +559,20 @@ impl SourceProvider for JiraSource {
         let email = config_string(config, "email")?;
         let token = config_string(config, "token")?;
 
-        let url = build_projects_url(&base_url);
-        let authorization = basic_auth_header(&email, &token);
+        let host = normalize_host(&base_url);
+        let url = format!("https://{host}/rest/api/3/project");
 
-        let response = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| format!("Failed to build HTTP client: {e}"))?
-            .get(&url)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .header(reqwest::header::AUTHORIZATION, authorization)
-            .send()
-            .await
-            .map_err(|e| {
-                eprintln!("Jira projects request to {url} failed: {e}");
-                format!("Could not reach the Jira server: {e}")
-            })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let hint = match status.as_u16() {
-                401 | 403 => "check your credentials and permissions.",
-                410 => "the Jira project endpoint was removed — update the app.",
-                _ => "see Jira API docs for this status code.",
-            };
-            return Err(format!("Jira API error {status}: {hint}"));
-        }
-
-        let body = response
-            .text()
-            .await
-            .map_err(|_| "Jira responded, but the body could not be read.".to_string())?;
+        let body = fetch_text(
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .map_err(|e| format!("Failed to build HTTP client: {e}"))?
+                .get(&url)
+                .basic_auth(&email, Some(&token)),
+            &url,
+            "project",
+        )
+        .await?;
 
         // Pass the raw project array through wrapped in `{ "projects": [...] }`
         // so the frontend's option-fetch contract is uniform across providers.
@@ -794,36 +761,9 @@ mod tests {
         assert_eq!(cards[1].status_name, "");
         assert_eq!(cards[1].priority_name, None);
 
-        // Request-shape helpers: bare-host base_url is trimmed and normalized,
-        // jql is percent-encoded, and the Basic header never exposes the token.
-        let url = build_search_url(
-            "  example.atlassian.net/  ",
-            "project = DEMO AND status != \"Done\"",
-            None,
-        );
-        assert_eq!(
-            url,
-            "https://example.atlassian.net/rest/api/3/search/jql?jql=project%20%3D%20DEMO%20AND%20status%20%21%3D%20%22Done%22&fields=key,summary,status,description,priority&maxResults=100"
-        );
-        // A user who pastes a full URL with a scheme must not produce a
-        // double-scheme URL (`https://https://host`).
-        assert_eq!(
-            build_search_url("https://example.atlassian.net", "project = DEMO", None),
-            "https://example.atlassian.net/rest/api/3/search/jql?jql=project%20%3D%20DEMO&fields=key,summary,status,description,priority&maxResults=100"
-        );
-        assert_eq!(
-            build_search_url("http://example.atlassian.net/", "project = DEMO", None),
-            "https://example.atlassian.net/rest/api/3/search/jql?jql=project%20%3D%20DEMO&fields=key,summary,status,description,priority&maxResults=100"
-        );
-        let auth = basic_auth_header("user", "secret");
-        assert!(auth.starts_with("Basic "));
-        assert!(!auth.contains("secret"));
-
-        // Project-list endpoint: same host normalization, no JQL encoding.
-        assert_eq!(
-            build_projects_url("  https://example.atlassian.net/  "),
-            "https://example.atlassian.net/rest/api/3/project"
-        );
+        // Host normalization: strip scheme, trailing slash, and whitespace.
+        assert_eq!(normalize_host("  https://example.atlassian.net/  "), "example.atlassian.net");
+        assert_eq!(normalize_host("http://example.atlassian.net"), "example.atlassian.net");
     }
 
     /// `adf_to_text` exercises: headings, paragraphs with inline marks
@@ -958,13 +898,11 @@ mod tests {
     }
 
     /// Jira Cloud signals more pages with an opaque `nextPageToken` cursor.
-    /// This synthesizes a two-issue page carrying a token, asserts the parser
-    /// surfaces the cursor alongside the cards, and verifies `build_search_url`
-    /// threads the cursor into the next page's URL (percent-encoded, since
-    /// tokens may contain characters that aren't URL-safe). An empty token
-    /// is treated as "no next page" so a misbehaving server can't loop us.
+    /// This synthesizes a two-issue page carrying a token and asserts the
+    /// parser surfaces the cursor. An empty token is treated as "no next page"
+    /// so a misbehaving server can't loop us.
     #[test]
-    fn parses_next_page_token_and_builds_cursor_url() {
+    fn parses_next_page_token() {
         let page = r#"{
             "nextPageToken": "abc 123/==",
             "issues": [
@@ -978,18 +916,6 @@ mod tests {
         assert_eq!(cards[0].source_ref, "PROJ-3");
         assert_eq!(cards[1].source_ref, "PROJ-4");
         assert_eq!(next_token.as_deref(), Some("abc 123/=="));
-
-        // The cursor is percent-encoded into the next page URL; the JQL and
-        // fields stay identical to the first page.
-        let next_url = build_search_url(
-            "example.atlassian.net",
-            "project = DEMO",
-            next_token.as_deref(),
-        );
-        assert_eq!(
-            next_url,
-            "https://example.atlassian.net/rest/api/3/search/jql?jql=project%20%3D%20DEMO&fields=key,summary,status,description,priority&maxResults=100&nextPageToken=abc%20123%2F%3D%3D"
-        );
 
         // An empty nextPageToken is normalized to None — no extra page fetch.
         let empty_token = r#"{

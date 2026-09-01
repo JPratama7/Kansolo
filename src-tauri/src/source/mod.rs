@@ -132,10 +132,8 @@ use std::collections::HashSet;
 use rusqlite::params;
 use tauri::AppHandle;
 
-use crate::db::cards::{
-    get_card_by_source_ref_inner, upsert_card_from_sync, upsert_card_from_sync_inner,
-};
-use crate::db::settings::{get_source, get_source_inner, save_snapshot};
+use crate::db::cards::{get_card_by_source_ref_inner, upsert_card_from_sync_inner};
+use crate::db::settings::{get_source, get_source_inner};
 use crate::db::{get_snapshot_inner, now_iso, open_db, save_snapshot_inner, SourceInstance};
 use crate::mapping::{is_status_mapped, resolve_column, resolve_priority, StatusMapping};
 use crate::sync::{apply_resolution, plan_sync, snapshot_from_card, Choice, SyncDecisionType};

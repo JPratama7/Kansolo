@@ -20,11 +20,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "charset", "http2"] }
-base64 = "0.22"
-urlencoding = "2"
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+time = { version = "0.3", features = ["formatting", "macros"] }
 rmcp = { version = "0.8", features = ["server", "macros", "transport-streamable-http-server"] }
 axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1", "matched-path", "original-uri"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util", "fs", "process"] }
@@ -32,7 +31,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 uuid = { version = "1", default-features = false, features = ["v4"] }
 agent-client-protocol = "2"
-dirs = "5"
+lexopt = "0.3"
 
 [profile.dev]
 opt-level = 1

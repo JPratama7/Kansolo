@@ -55,14 +55,24 @@ pub fn usage() {
 }
 
 /// Resolve the tasker DB path: `TASKER_CONFIG_DIR` env var >
-/// `dirs::config_dir().join("tasker/tasker.db")`.
+/// `${XDG_CONFIG_HOME:-$HOME/.config}/tasker/tasker.db`.
 fn resolve_db_path() -> Result<PathBuf, AcpError> {
     if let Ok(dir) = std::env::var("TASKER_CONFIG_DIR") {
         return Ok(PathBuf::from(dir).join("tasker.db"));
     }
-    dirs::config_dir()
+    config_dir()
         .map(|d| d.join("tasker").join("tasker.db"))
         .ok_or_else(|| AcpError::internal("cannot resolve config dir; set TASKER_CONFIG_DIR"))
+}
+
+fn config_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .or_else(|| std::env::var_os("USERPROFILE"))
+                .map(|h| PathBuf::from(h).join(".config"))
+        })
 }
 
 /// Open the DB, run migrations, and seed the built-in claude-code agent.
@@ -112,43 +122,47 @@ struct ParsedArgs {
     bool_flags: std::collections::HashSet<String>,
 }
 
-/// Hand-rolled parser: `--flag value`, `--flag=value`, `--bool` (no value),
-/// and bare positionals. Repeated flags collect into a Vec.
-fn parse_args(args: &[String], bool_flags: &[&str]) -> ParsedArgs {
+/// Parse with `lexopt`: `--flag value`, `--flag=value`, `--bool`, and bare
+/// positionals. Repeated flags collect into a Vec.
+fn parse_args(args: &[String], bool_flags: &[&str]) -> Result<ParsedArgs, AcpError> {
+    use lexopt::prelude::*;
     let mut positional = Vec::new();
     let mut flags: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     let mut bool_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     let bool_lookup: std::collections::HashSet<&str> = bool_flags.iter().copied().collect();
 
-    let mut i = 0;
-    while i < args.len() {
-        let a = &args[i];
-        if let Some(rest) = a.strip_prefix("--") {
-            if let Some((k, v)) = rest.split_once('=') {
-                flags.entry(k.to_string()).or_default().push(v.to_string());
-            } else if bool_lookup.contains(rest) {
-                bool_set.insert(rest.to_string());
-            } else if i + 1 < args.len() && !args[i + 1].starts_with("--") {
-                flags
-                    .entry(rest.to_string())
-                    .or_default()
-                    .push(args[i + 1].clone());
-                i += 1;
-            } else {
-                // Treat trailing flag with no value as a bool flag.
-                bool_set.insert(rest.to_string());
+    let mut parser = lexopt::Parser::from_args(args.iter().cloned());
+    while let Some(arg) = parser
+        .next()
+        .map_err(|e| AcpError::validation(e.to_string()))?
+    {
+        match arg {
+            Long(raw_name) => {
+                let name = raw_name.to_string();
+                drop(arg);
+                if bool_lookup.contains(name.as_str()) {
+                    bool_set.insert(name);
+                } else if let Ok(value) = parser.value() {
+                    flags
+                        .entry(name)
+                        .or_default()
+                        .push(value.to_string_lossy().into_owned());
+                } else {
+                    bool_set.insert(name);
+                }
             }
-        } else {
-            positional.push(a.clone());
+            Short(_) => {
+                return Err(AcpError::validation("short flags are not supported"));
+            }
+            Value(value) => positional.push(value.to_string_lossy().into_owned()),
         }
-        i += 1;
     }
-    ParsedArgs {
+    Ok(ParsedArgs {
         positional,
         flags,
         bool_flags: bool_set,
-    }
+    })
 }
 
 fn last_flag<'a>(
@@ -160,7 +174,7 @@ fn last_flag<'a>(
 
 /// `run <card_id> [--agent <name>] [--skill <name>]... [--input <text>]`
 async fn cmd_run(args: &[String]) -> Result<i32, AcpError> {
-    let parsed = parse_args(args, &[]);
+    let parsed = parse_args(args, &[])?;
     let card_id = parsed
         .positional
         .first()
@@ -583,7 +597,7 @@ fn truncate(s: &str, n: usize) -> String {
 /// `merge <card_id> [--yes] [--prune]` — print diff summary, prompt [y/N]
 /// unless --yes, call merge_branch, set merged_at on success.
 async fn cmd_merge(args: &[String]) -> Result<i32, AcpError> {
-    let parsed = parse_args(args, &["yes", "prune"]);
+    let parsed = parse_args(args, &["yes", "prune"])?;
     let card_id = parsed
         .positional
         .first()
@@ -724,7 +738,7 @@ async fn cmd_agents(args: &[String]) -> Result<i32, AcpError> {
 
 /// `agents add <name> --command <path> [--desc <text>] [--skill <name>]...`
 fn cmd_agents_add(args: &[String]) -> Result<i32, AcpError> {
-    let parsed = parse_args(args, &[]);
+    let parsed = parse_args(args, &[])?;
     let name = parsed
         .positional
         .first()
@@ -757,7 +771,7 @@ fn cmd_agents_add(args: &[String]) -> Result<i32, AcpError> {
 
 /// `agents edit <name> [--command <path>] [--desc <text>] [--skill <name>]...`
 fn cmd_agents_edit(args: &[String]) -> Result<i32, AcpError> {
-    let parsed = parse_args(args, &[]);
+    let parsed = parse_args(args, &[])?;
     let name = parsed
         .positional
         .first()
@@ -788,7 +802,7 @@ fn cmd_agents_edit(args: &[String]) -> Result<i32, AcpError> {
 
 /// `agents remove <name>` — delete from DB (delete_runs=false by default).
 fn cmd_agents_remove(args: &[String]) -> Result<i32, AcpError> {
-    let parsed = parse_args(args, &[]);
+    let parsed = parse_args(args, &[])?;
     let name = parsed
         .positional
         .first()

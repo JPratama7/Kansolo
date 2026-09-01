@@ -17,11 +17,17 @@ fn skills_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("ACP_SKILLS_DIR") {
         return PathBuf::from(dir);
     }
-    if let Some(home) = dirs::home_dir() {
+    if let Some(home) = home_dir() {
         home.join(".agents/skills")
     } else {
         PathBuf::from(".agents/skills")
     }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
 }
 
 /// Parse YAML-like frontmatter from a SKILL.md body.
