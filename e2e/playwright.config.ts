@@ -20,7 +20,7 @@ import { defineConfig, devices } from "@playwright/test";
  *     separately (out of scope for this step).
  *
  * Run: `deno task test:e2e` (starts the dev server + Playwright).
- * The dev server is expected to already be running on port 1420, OR
+ * Dev server is expected to already be running on port 1420, OR
  * Playwright will start it via the `webServer` config below.
  */
 

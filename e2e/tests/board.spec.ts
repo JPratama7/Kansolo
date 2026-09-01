@@ -1,7 +1,7 @@
 import { expect, test } from "./fixtures.ts";
 import type { InvokeHandlers } from "./fixtures.ts";
 
-/** A minimal in-memory card store backing the mocked Tauri commands. */
+/** Minimal in-memory card store backing the mocked Tauri commands. */
 function cardStore(
   initial: Array<
     {
@@ -94,7 +94,7 @@ test.describe("Board drag-drop and keyboard move", () => {
     await done.hover();
     await page.mouse.up();
 
-    // After drop, the card should appear in the Done column.
+    // Post-drop, the card should appear in the Done column.
     await expect(done.locator('[data-testid="card-card-1"]')).toBeVisible({
       timeout: 5000,
     });
