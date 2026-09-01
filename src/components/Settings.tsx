@@ -605,16 +605,14 @@ export default function Settings(props: SettingsProps) {
                                     </p>
                                   }
                                 >
-                                  {(view) => {
-                                    const v = view();
-                                    return createComponent(v.comp, {
+                                  {(v) =>
+                                    createComponent(v.comp, {
                                       instance: v.inst,
                                       onSave: (
-                                        cfg: Record<string, unknown>,
-                                        m: StatusMapping,
-                                      ) => handleSaveEdit(cfg, m),
-                                    });
-                                  }}
+                                        config: Record<string, unknown>,
+                                        statusMapping: StatusMapping,
+                                      ) => handleSaveEdit(config, statusMapping),
+                                    })}
                                 </Show>
                                 <div class="flex gap-2 justify-end">
                                   <button
