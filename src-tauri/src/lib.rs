@@ -46,6 +46,12 @@ pub fn run() {
             }
             drop(conn);
 
+            // Wire the AppHandle into the run core so it can push events.
+            let _ = app
+                .state::<runner::RunnerState>()
+                .core
+                .set_app(app.handle().clone());
+
             // Install the system tray icon + menu.
             tray::install(app.handle())?;
 

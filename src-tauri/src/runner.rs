@@ -9,11 +9,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter};
 use tokio::sync::{mpsc, Mutex, Notify};
-use tokio_util::sync::CancellationToken;
 
 use crate::db::agent_runs;
 use crate::db::agents;
@@ -25,7 +25,7 @@ use crate::worktree::WorktreeManager;
 /// A running agent run: the spawned task + cancellation token.
 pub struct RunHandle {
     pub join: tokio::task::JoinHandle<()>,
-    pub cancel: CancellationToken,
+    pub cancel: std::sync::Arc<Notify>,
     /// Sender for follow-up prompts when the agent stops with EndTurn and
     /// the user types a reply in the popup. `None` for runs that don't
     /// support interaction (CLI auto-complete).
@@ -62,6 +62,21 @@ pub enum RunUpdate {
     /// The UI should show an input field.
     #[serde(rename_all = "camelCase")]
     WaitingForInput { stop_reason: String },
+}
+
+/// Frontend event payload for a single run update.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpUpdateEvent {
+    pub run_id: String,
+    pub update: RunUpdate,
+}
+
+/// Frontend event payload when the set of active runs changes.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AcpActiveRunsChangedEvent {
+    pub runs: Vec<agent_runs::AgentRun>,
 }
 
 /// Trait for receiving run updates. Implemented by both the Tauri event
@@ -116,6 +131,8 @@ pub struct RunCore {
     pub buffers: Arc<Mutex<HashMap<String, UpdateBuffer>>>,
     /// Pending permission requests, keyed by "{run_id}:{request_id}".
     pub permissions: Arc<Mutex<HashMap<String, Arc<PendingPermission>>>>,
+    /// AppHandle for pushing updates to the frontend. Set once on startup.
+    pub app: OnceLock<AppHandle>,
 }
 
 impl RunCore {
@@ -124,7 +141,12 @@ impl RunCore {
             runs: Arc::new(Mutex::new(HashMap::new())),
             buffers: Arc::new(Mutex::new(HashMap::new())),
             permissions: Arc::new(Mutex::new(HashMap::new())),
+            app: OnceLock::new(),
         }
+    }
+
+    pub fn set_app(&self, app: AppHandle) -> Result<(), AppHandle> {
+        self.app.set(app)
     }
 
     /// Create a new agent run. Takes pre-loaded data (from the Tauri command
@@ -149,7 +171,7 @@ impl RunCore {
 
         // Step 9: Spawn SDK connection.
         let (tx, rx) = mpsc::unbounded_channel::<RunUpdate>();
-        let cancel = CancellationToken::new();
+        let cancel = std::sync::Arc::new(Notify::new());
         let cancel_for_handle = cancel.clone();
         let cwd = worktree.path.clone();
         let run_id_clone = run_id.clone();
@@ -233,7 +255,7 @@ impl RunCore {
                                 tokio::pin!(read);
                                 tokio::select! {
                                     biased;
-                                    _ = cancel_inner.cancelled() => {
+                                    _ = cancel_inner.notified() => {
                                         let _ = conn_for_cancel.send_notification(
                                             agent_client_protocol::schema::v1::CancelNotification::new(session_id.clone()),
                                         );
@@ -378,7 +400,7 @@ impl RunCore {
                                                             }
                                                             tokio::select! {
                                                                 biased;
-                                                                _ = cancel_inner.cancelled() => {
+                                                                _ = cancel_inner.notified() => {
                                                                     flush_pending_chunk(&mut pending_chunk, &tx);
                                                                     let _ = tx.send(RunUpdate::Cancelled);
                                                                     terminal = true;
@@ -468,8 +490,9 @@ impl RunCore {
         let runs_map = self.runs.clone();
         let buffers_map = self.buffers.clone();
         let run_id_for_drain = run_id_for_handle.clone();
+        let app = self.app.get().cloned();
         tokio::spawn(async move {
-            drain_updates(rx, buffers_map, runs_map, run_id_for_drain, db_path).await;
+            drain_updates(rx, buffers_map, runs_map, run_id_for_drain, db_path, app).await;
         });
 
         // Step 12: Return the real worktree path + branch so the caller can
@@ -485,7 +508,7 @@ impl RunCore {
             runs.remove(run_id)
         };
         if let Some(handle) = handle {
-            handle.cancel.cancel();
+            handle.cancel.notify_waiters();
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle.join).await;
         }
     }
@@ -574,7 +597,7 @@ impl RunCore {
         };
         let mut ids = Vec::new();
         for (run_id, handle) in runs {
-            handle.cancel.cancel();
+            handle.cancel.notify_waiters();
             let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle.join).await;
             ids.push(run_id);
         }
@@ -774,6 +797,31 @@ fn read_permission_timeout(db_path: &PathBuf) -> u64 {
         .unwrap_or(300)
 }
 
+fn emit_run_update(app: Option<&AppHandle>, run_id: &str, update: &RunUpdate) {
+    if let Some(app) = app {
+        let _ = app.emit(
+            "acp:update",
+            AcpUpdateEvent {
+                run_id: run_id.to_string(),
+                update: update.clone(),
+            },
+        );
+    }
+}
+
+fn emit_active_runs_changed(app: Option<&AppHandle>) {
+    let Some(app) = app else {
+        return;
+    };
+    let Ok(conn) = crate::db::open_db(app) else {
+        return;
+    };
+    let Ok(runs) = agent_runs::list_active(&conn) else {
+        return;
+    };
+    let _ = app.emit("acp:active_runs_changed", AcpActiveRunsChangedEvent { runs });
+}
+
 /// Drain updates from the channel into the buffer.
 /// Writes terminal state to DB on Completed/Failed/Cancelled and on the
 /// channel-closed fallback (decision 47). The DB path is threaded in so
@@ -785,6 +833,7 @@ async fn drain_updates(
     runs: Arc<Mutex<HashMap<String, RunHandle>>>,
     run_id: String,
     db_path: PathBuf,
+    app: Option<AppHandle>,
 ) {
     while let Some(update) = rx.recv().await {
         let mut buffers = buffers.lock().await;
@@ -797,6 +846,7 @@ async fn drain_updates(
             }
             buf.updates.push(update.clone());
             buf.dirty = true;
+            emit_run_update(app.as_ref(), &run_id, &update);
             match &update {
                 RunUpdate::Completed { .. } | RunUpdate::Failed { .. } | RunUpdate::Cancelled => {
                     Some(buf.output.clone())
@@ -821,6 +871,7 @@ async fn drain_updates(
                     Some(stop_reason),
                     None,
                 );
+                emit_active_runs_changed(app.as_ref());
                 return;
             }
             RunUpdate::Failed { error } => {
@@ -836,6 +887,7 @@ async fn drain_updates(
                     None,
                     Some(error),
                 );
+                emit_active_runs_changed(app.as_ref());
                 return;
             }
             RunUpdate::Cancelled => {
@@ -851,6 +903,7 @@ async fn drain_updates(
                     Some("user_cancelled"),
                     None,
                 );
+                emit_active_runs_changed(app.as_ref());
                 return;
             }
             _ => {}
@@ -867,10 +920,12 @@ async fn drain_updates(
         });
         if !already_terminal {
             let output = buf.output.clone();
-            buf.updates.push(RunUpdate::Failed {
+            let failed_update = RunUpdate::Failed {
                 error: "drain: channel closed".to_string(),
-            });
+            };
+            buf.updates.push(failed_update.clone());
             buf.dirty = true;
+            emit_run_update(app.as_ref(), &run_id, &failed_update);
             drop(buffers);
             write_terminal_status(
                 &db_path,
@@ -880,6 +935,7 @@ async fn drain_updates(
                 None,
                 Some("drain: channel closed"),
             );
+            emit_active_runs_changed(app.as_ref());
         }
     }
 }
@@ -923,7 +979,7 @@ fn write_terminal_status(
 // ---------------------------------------------------------------------------
 
 use crate::db::open_db;
-use tauri::{AppHandle, Manager, State};
+use tauri::{Manager, State};
 
 /// Tauri-managed state holding the run executor.
 pub struct RunnerState {
@@ -1076,6 +1132,7 @@ pub async fn acp_create_run(
         agent_runs::set_worktree_info(&conn, &run_id, &worktree_path, &branch, &repo_path)?;
         agent_runs::update_status(&conn, &run_id, "running", None, None, None, None)?;
     }
+    emit_active_runs_changed(Some(&app));
 
     // Step 12: Read back the run row.
     let conn = open_db(&app)?;
@@ -1153,7 +1210,9 @@ pub async fn acp_cancel_run(
         Some("user_cancelled"),
         None,
         Some(&crate::db::now_iso()),
-    )
+    )?;
+    emit_active_runs_changed(Some(&app));
+    Ok(())
 }
 
 /// Respond to a pending permission request from an agent.
@@ -1533,7 +1592,7 @@ mod tests {
             stop_reason: "end_turn".into(),
         });
         drop(tx);
-        drain_updates(rx, buffers, runs, "r-1".to_string(), db_path.clone()).await;
+        drain_updates(rx, buffers, runs, "r-1".to_string(), db_path.clone(), None).await;
 
         let conn = open_db_path(&db_path).unwrap();
         let run = agent_runs::get_run(&conn, "r-1").unwrap().unwrap();
@@ -1572,7 +1631,7 @@ mod tests {
         // Drop the sender without sending a terminal update — drain should
         // fall back to the channel-closed path and write `failed`.
         drop(tx);
-        drain_updates(rx, buffers, runs, "r-2".to_string(), db_path.clone()).await;
+        drain_updates(rx, buffers, runs, "r-2".to_string(), db_path.clone(), None).await;
 
         let conn = open_db_path(&db_path).unwrap();
         let run = agent_runs::get_run(&conn, "r-2").unwrap().unwrap();
@@ -1609,7 +1668,7 @@ mod tests {
         let runs = Arc::new(Mutex::new(HashMap::new()));
         let _ = tx.send(RunUpdate::Cancelled);
         drop(tx);
-        drain_updates(rx, buffers, runs, "r-3".to_string(), db_path.clone()).await;
+        drain_updates(rx, buffers, runs, "r-3".to_string(), db_path.clone(), None).await;
 
         let conn = open_db_path(&db_path).unwrap();
         let run = agent_runs::get_run(&conn, "r-3").unwrap().unwrap();
@@ -1956,6 +2015,7 @@ mod tests {
             runs,
             "r-to".to_string(),
             db_path.clone(),
+            None,
         )
         .await;
 
