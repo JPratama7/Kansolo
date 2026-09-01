@@ -1,17 +1,17 @@
-import { test, vi, expect } from 'vitest';
-import { waitFor } from '@solidjs/testing-library';
-import { installDom, resetDom, teardownDom } from './setup.ts';
-import { render, cleanup } from '@solidjs/testing-library';
-import { createSignal, Show } from 'solid-js';
-import { Toaster, Toast } from '@ark-ui/solid/toast';
-import { toaster } from '../toaster.ts';
+import { expect, test, vi } from "vitest";
+import { waitFor } from "@solidjs/testing-library";
+import { installDom, resetDom, teardownDom } from "./setup.ts";
+import { cleanup, render } from "@solidjs/testing-library";
+import { createSignal, Show } from "solid-js";
+import { Toast, Toaster } from "@ark-ui/solid/toast";
+import { toaster } from "../toaster.ts";
 
 installDom();
 
-test('Toast action after originating component unmount: no crash, dismisses cleanly', async () => {
-  const errorSpy = vi.spyOn(console, 'error');
+test("Toast action after originating component unmount: no crash, dismisses cleanly", async () => {
+  const errorSpy = vi.spyOn(console, "error");
   // Simulate the EditModal guard: card may be deleted while toast is shown.
-  const [card, setCard] = createSignal<{ id: string } | null>({ id: 'c1' });
+  const [card, setCard] = createSignal<{ id: string } | null>({ id: "c1" });
 
   // The Toaster must stay mounted — it renders the toast DOM. The
   // "originating component" (EditModal) is simulated by the `card` signal;
@@ -33,11 +33,11 @@ test('Toast action after originating component unmount: no crash, dismisses clea
   ));
 
   const id = toaster.create({
-    title: 'Discard?',
-    type: 'warning',
+    title: "Discard?",
+    type: "warning",
     duration: Infinity,
     action: {
-      label: 'Discard',
+      label: "Discard",
       onClick: () => {
         // Guard: originating card was deleted/unmounted while toast shown.
         if (card() === null) {
@@ -56,16 +56,21 @@ test('Toast action after originating component unmount: no crash, dismisses clea
 
   // The action button renders as a <button> via Toast.ActionTrigger.
   // Query the portal (document.body) for the action-trigger button.
-  const btn = document.body.querySelector('[data-part="action-trigger"]') as HTMLButtonElement | null;
-  if (!btn) throw new Error('Discard action button not found in portal');
+  const btn = document.body.querySelector('[data-part="action-trigger"]') as
+    | HTMLButtonElement
+    | null;
+  if (!btn) throw new Error("Discard action button not found in portal");
   btn.click();
 
   // Wait for the toast to be dismissed from the DOM (the dismiss is
   // async — the toast machine processes the DISMISS event and the
   // Toaster re-renders without the toast).
   await waitFor(() => {
-    const toastStillPresent = document.body.textContent?.includes('Discard?') ?? false;
-    if (toastStillPresent) throw new Error('toast should be dismissed after action click');
+    const toastStillPresent = document.body.textContent?.includes("Discard?") ??
+      false;
+    if (toastStillPresent) {
+      throw new Error("toast should be dismissed after action click");
+    }
   });
 
   expect(errorSpy).not.toHaveBeenCalled();

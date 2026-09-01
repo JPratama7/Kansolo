@@ -8,7 +8,7 @@
  * Idempotent: re-installing replaces the previous window cleanly. Tests
  * should call `resetDom()` between cases to clear the document body.
  */
-import { GlobalWindow } from 'happy-dom';
+import { GlobalWindow } from "happy-dom";
 
 let installed: GlobalWindow | null = null;
 
@@ -32,7 +32,7 @@ export function installDom(): GlobalWindow {
 export function resetDom(): void {
   const win = installed;
   if (!win) return;
-  win.document.body.innerHTML = '';
+  win.document.body.innerHTML = "";
 }
 
 /** Tear down the happy-dom window (called in test cleanup). */
