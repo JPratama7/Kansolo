@@ -452,7 +452,7 @@ async fn spawn_and_stream(
             }
         }
     }
-    // Ensure the spawned task completes.
+    // Wait for the spawned task to finish.
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), join).await;
 
     // Update DB with terminal status.
