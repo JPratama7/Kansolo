@@ -1,8 +1,7 @@
 import { listen, type EventCallback, type Options } from "@tauri-apps/api/event";
 
-/** Wrapper around `listen` that fails silently when the Tauri event
- * internals are not available (e.g. in unit tests). Returns an unlisten
- * function in both cases. */
+/** `listen` wrapper that returns an unlisten function even when Tauri
+ * event internals are missing (e.g. unit tests). */
 export async function safeListen<T>(
   event: string,
   handler: EventCallback<T>,
