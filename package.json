@@ -6,6 +6,8 @@
   "scripts": {
     "start": "vite",
     "dev": "vite",
+    "lint": "biome check .",
+    "format": "biome format --write .",
     "build": "vite build",
     "serve": "vite preview",
     "tauri": "tauri"
@@ -14,7 +16,6 @@
   "dependencies": {
     "@ark-ui/solid": "^5.39.0",
     "@git-diff-view/solid": "^0.1.7",
-    "@tailwindcss/vite": "^4.3.3",
     "highlight.js": "~11.11.0",
     "lowlight": "^3.3.0",
     "micromark": "^4.0.2",
@@ -24,6 +25,7 @@
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
     "@playwright/test": "^1.62.1",
     "@solidjs/testing-library": "^0.8.10",
     "happy-dom": "^20.11.6",
