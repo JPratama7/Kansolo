@@ -127,18 +127,14 @@ pub fn run() {
 /// read config before the frontend has loaded. Returns `None` if the DB or row
 /// is missing.
 pub fn read_setting<R: tauri::Runtime>(app: &tauri::AppHandle<R>, key: &str) -> Option<String> {
-    let dir = app.path().app_config_dir().ok()?;
-    let db_path = dir.join("tasker.db");
+    let db_path = app.path().app_config_dir().ok()?.join("tasker.db");
     if !db_path.exists() {
         return None;
     }
     // Use the shared opener so WAL + busy_timeout + FK pragmas match the
     // rest of the app (avoids locked/FK-disabled reads).
     let conn = db::open_db_path(&db_path).ok()?;
-    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
-        r.get::<_, String>(0)
-    })
-    .ok()
+    db::read_setting(&conn, key)
 }
 
 /// Read `mcp_enabled` + `mcp_port` from the settings table via rusqlite, so the
