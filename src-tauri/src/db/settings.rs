@@ -1,5 +1,6 @@
 // Settings, snapshots, tree sources, and source-instance commands.
-use crate::db::{now_iso, open_db, ExternalSnapshot, SourceInstance, StatusMapping, TreeSource};
+use crate::db::{now_iso, open_db, SourceInstance, TreeSource};
+use crate::mapping::StatusMapping;
 use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -9,16 +10,7 @@ use tauri::AppHandle;
 #[tauri::command]
 pub async fn get_setting(app: AppHandle, key: String) -> Result<Option<String>, String> {
     let conn = open_db(&app)?;
-    conn.query_row(
-        "SELECT value FROM settings WHERE key = ?1",
-        params![key],
-        |row| row.get::<_, String>(0),
-    )
-    .map(Some)
-    .or_else(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => Ok(None),
-        other => Err(other.to_string()),
-    })
+    Ok(crate::db::read_setting(&conn, &key))
 }
 
 /// Upsert a single setting value.
@@ -52,94 +44,6 @@ pub async fn get_all_settings(app: AppHandle) -> Result<HashMap<String, String>,
         out.insert(k, v);
     }
     Ok(out)
-}
-
-/// Atomically upsert a batch of settings inside a single transaction.
-#[tauri::command]
-pub async fn save_settings(
-    app: AppHandle,
-    settings: HashMap<String, String>,
-) -> Result<(), String> {
-    let mut conn = open_db(&app)?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    {
-        let mut stmt = tx
-            .prepare(
-                "INSERT INTO settings (key, value) VALUES (?1, ?2)
-                 ON CONFLICT(key) DO UPDATE SET value = ?2",
-            )
-            .map_err(|e| e.to_string())?;
-        for (k, v) in &settings {
-            stmt.execute(params![k, v]).map_err(|e| e.to_string())?;
-        }
-    }
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-/// Read the last-synced snapshot for a `(source_instance_id, source_ref)`
-/// pair, if any. Uses the generalized `external_snapshots` table.
-#[tauri::command]
-pub async fn get_snapshot(
-    app: AppHandle,
-    source_instance_id: String,
-    source_ref: String,
-) -> Result<Option<ExternalSnapshot>, String> {
-    let conn = open_db(&app)?;
-    conn.query_row(
-        r#"SELECT source_instance_id, source, source_ref, title, description, priority, source_status, "column", synced_at
-           FROM external_snapshots WHERE source_instance_id = ?1 AND source_ref = ?2 LIMIT 1"#,
-        params![source_instance_id, source_ref],
-        |row| {
-            Ok(ExternalSnapshot {
-                source_instance_id: row.get(0)?,
-                source: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
-                source_ref: row.get(2)?,
-                title: row.get(3)?,
-                description: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
-                priority: row
-                    .get::<_, Option<String>>(5)?
-                    .filter(|p| !p.is_empty())
-                    .unwrap_or_else(|| "medium".to_string()),
-                source_status: row.get::<_, Option<String>>(6)?.unwrap_or_default(),
-                column: row.get(7)?,
-                synced_at: row.get(8)?,
-            })
-        },
-    )
-    .map(Some)
-    .or_else(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => Ok(None),
-        other => Err(other.to_string()),
-    })
-}
-
-/// Upsert the snapshot row for a `(source_instance_id, source_ref)` pair —
-/// the external state at this sync instant. Mirrors src/db.ts lines 218-235.
-#[tauri::command]
-pub async fn save_snapshot(app: AppHandle, snap: ExternalSnapshot) -> Result<(), String> {
-    let conn = open_db(&app)?;
-    conn.execute(
-        r#"INSERT INTO external_snapshots
-             (source_instance_id, source, source_ref, title, description, priority, source_status, "column", synced_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-           ON CONFLICT(source_instance_id, source_ref) DO UPDATE SET
-             source = ?2, title = ?4, description = ?5, priority = ?6, source_status = ?7,
-             "column" = ?8, synced_at = ?9"#,
-        params![
-            snap.source_instance_id,
-            snap.source,
-            snap.source_ref,
-            snap.title,
-            snap.description,
-            snap.priority,
-            snap.source_status,
-            snap.column,
-            snap.synced_at,
-        ],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 /// List all registered tree sources, ordered by label ascending.
