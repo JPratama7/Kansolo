@@ -5,8 +5,6 @@ import App from "./App";
 import { initTheme, themeReady } from "./theme.ts";
 import "./index.css";
 
-// Read the saved theme before the app shell mounts; index.tsx gates the
-// UI on themeReady so nothing paints in the wrong theme.
 void initTheme();
 
 // Minimal loading screen shown while the theme loads from the DB.

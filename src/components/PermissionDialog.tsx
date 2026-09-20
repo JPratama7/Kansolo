@@ -27,8 +27,7 @@ function syncHead() {
   setPermissionHead(permissionQueue[0] ?? null);
 }
 
-/** Enqueue a permission request from a run panel. Duplicate requestIds
- * (e.g. a late poll re-delivering the same request) are ignored. */
+/** Duplicate requestIds (e.g. a late poll re-delivering the same request) are ignored. */
 export function enqueuePermission(item: PermissionQueueItem): void {
   if (permissionQueue.some((q) => q.requestId === item.requestId)) return;
   permissionQueue.push(item);
@@ -54,7 +53,6 @@ export function dequeuePermissionsForRun(runId: string): void {
   syncHead();
 }
 
-/** Current queue head (the single request being mediated). */
 export function permissionHeadSignal(): PermissionQueueItem | null {
   return permissionHead();
 }
@@ -65,13 +63,9 @@ export function clearPermissionQueue(): void {
   syncHead();
 }
 
-/** Permission mediation UI. Renders only the queue head — concurrent
- * requests from multiple runs are serialized by the module-level FIFO
- * store. The description is the structured tool summary (tool name +
- * truncated args) produced on the Rust side; rendered as plain text
- * under an "untrusted agent content" label. The countdown reads
- * `timeoutMs` from the queue item (Rust payload or setting), not a
- * hardcoded constant. */
+/** Permission mediation UI. Renders only the queue head (FIFO). The
+ * description is untrusted agent content, shown as plain text. Countdown
+ * reads `timeoutMs` from the queue item, not a hardcoded constant. */
 export default function PermissionDialog() {
   const head = permissionHead;
   const [remaining, setRemaining] = createSignal(0);

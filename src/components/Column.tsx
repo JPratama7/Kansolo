@@ -4,14 +4,7 @@ import type { ColumnId, KanbanCard, TreeSource } from "../types.ts";
 import { PRIORITIES } from "../types.ts";
 import type { AgentRun } from "../db.ts";
 import Card from "./Card.tsx";
-
-declare module "solid-js" {
-  namespace JSX {
-    interface Directives {
-      droppable: (el: HTMLElement, accessor: () => unknown) => void;
-    }
-  }
-}
+import "./ui/dnd-directives.ts";
 
 interface ColumnProps {
   column: { id: ColumnId; title: string };
@@ -183,10 +176,8 @@ export default function Column(props: ColumnProps) {
   );
 }
 
-/** Placeholder card shown while a column's cards load. Mirrors the real
- * card silhouette (priority strip + title + description + footer) so the
- * layout doesn't shift when real cards arrive. The shimmer is a single
- * quiet ambient cue; reduced-motion users see a static block. */
+/** Placeholder card while a column loads; mirrors the real silhouette so
+ * layout doesn't shift. Reduced-motion users see a static block. */
 function CardSkeleton() {
   return (
     <div
