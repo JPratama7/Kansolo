@@ -1,11 +1,4 @@
-import {
-  createMemo,
-  createSignal,
-  For,
-  onCleanup,
-  onMount,
-  Show,
-} from "solid-js";
+import { createMemo, For, onCleanup, onMount, Show } from "solid-js";
 
 export interface SyncSummaryEntry {
   label: string;
@@ -32,45 +25,10 @@ function sourceColor(sourceType: string): string {
   return SOURCE_COLORS[sourceType] ?? DEFAULT_SOURCE_COLOR;
 }
 
-/** Animate an integer from 0 to target over `duration` ms, ease-out.
- *  Respects prefers-reduced-motion (jumps to target immediately). */
-function useCountUp(target: number, duration = 500) {
-  const [current, setCurrent] = createSignal(0);
-  onMount(() => {
-    if (target <= 0) return;
-    const reduce =
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduce) {
-      setCurrent(target);
-      return;
-    }
-    const start = performance.now();
-    let raf = 0;
-    const tick = (now: number) => {
-      const t = Math.min(1, (now - start) / duration);
-      // ease-out cubic
-      const eased = 1 - Math.pow(1 - t, 3);
-      setCurrent(Math.round(target * eased));
-      if (t < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    onCleanup(() => cancelAnimationFrame(raf));
-  });
-  return current;
-}
-
 export default function SyncSummaryModal(props: SyncSummaryModalProps) {
   const total = createMemo(() =>
     props.entries.reduce((sum, e) => sum + e.count, 0)
   );
-  const displayedTotal = useCountUp(total());
-
-  // Mount flag flips true next frame so the proportion bar transitions from 0.
-  const [mounted, setMounted] = createSignal(false);
-  onMount(() => {
-    const id = requestAnimationFrame(() => setMounted(true));
-    onCleanup(() => cancelAnimationFrame(id));
-  });
 
   onMount(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -126,7 +84,7 @@ export default function SyncSummaryModal(props: SyncSummaryModalProps) {
                 "text-ink-muted": !hasImports(),
               }}
             >
-              {displayedTotal()}
+              {total()}
             </span>
             <span class="text-sm font-medium text-ink-secondary">
               ticket{total() === 1 ? "" : "s"} imported
@@ -134,7 +92,7 @@ export default function SyncSummaryModal(props: SyncSummaryModalProps) {
           </div>
 
           <Show when={hasImports()}>
-            <div class="sync-bar" classList={{ "is-mounted": mounted() }}>
+            <div class="sync-bar">
               <For each={props.entries}>
                 {(e) => (
                   <div

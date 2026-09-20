@@ -13,6 +13,8 @@ import { DiffView } from "@git-diff-view/solid";
 import { highlighter } from "../vendor/git-diff-lowlight.mjs";
 import "@git-diff-view/solid/styles/diff-view.css";
 import { toaster } from "./ui/toaster.ts";
+import { STATUS_LABEL } from "./ui/consts.ts";
+import { panelResize } from "./ui/panelResize.ts";
 import type {
   AcpUpdateEvent,
   AgentRun,
@@ -23,15 +25,18 @@ import type {
 import { safeListen } from "../event.ts";
 import {
   acpCancelRun,
+  acpCompleteRun,
   acpDiffMain,
   acpErrorMessage,
   acpListUpdates,
+  acpLoadRunHistory,
   acpMerge,
   acpRemoveWorktree,
   acpResumeRun,
+  acpRunProcessInfo,
   acpSendFollowup,
+  acpSetSessionConfig,
   getAllSettings,
-  setSetting,
 } from "../db.ts";
 
 export interface AgentRunPanelProps {
@@ -39,14 +44,6 @@ export interface AgentRunPanelProps {
   onOpenChange: (open: boolean) => void;
   run: AgentRun | null;
 }
-
-const STATUS_LABEL: Record<string, string> = {
-  pending: "Queued",
-  running: "Running",
-  completed: "Completed",
-  failed: "Failed",
-  cancelled: "Cancelled",
-};
 
 /** Status → breathing-dot modifier class. */
 const STATUS_DOT: Record<string, string> = {
@@ -57,11 +54,12 @@ const STATUS_DOT: Record<string, string> = {
   cancelled: "muted",
 };
 
-/** One rendered entry in the chat thread. The raw RunUpdate union maps
+/** One rendered entry in the transcript. The raw RunUpdate union maps
  * to this display-only shape so the JSX switch stays flat and the stream
  * can also carry locally-sent user messages. */
 type ThreadMsg =
   | { kind: "assistant"; text: string }
+  | { kind: "tool"; text: string }
   | { kind: "user"; text: string }
   | { kind: "session"; sessionId: string }
   | { kind: "status"; text: string; tone: "ok" | "err" | "muted" }
@@ -69,11 +67,16 @@ type ThreadMsg =
   | { kind: "permTimeout" }
   | { kind: "waiting" };
 
-/** Map a streamed RunUpdate to its display ThreadMsg. */
 function updateToThread(u: RunUpdate): ThreadMsg | null {
   switch (u.type) {
-    case "sessionUpdate":
+    case "sessionUpdate": {
+      // Tool calls / thoughts render as dim inline lines, agent text as
+      // the plain stream.
+      if (u.text.startsWith("🔧") || u.text.startsWith("💭")) {
+        return { kind: "tool", text: u.text };
+      }
       return { kind: "assistant", text: u.text };
+    }
     case "sessionId":
       return { kind: "session", sessionId: u.sessionId };
     case "completed":
@@ -86,6 +89,8 @@ function updateToThread(u: RunUpdate): ThreadMsg | null {
       return { kind: "status", text: `Failed · ${u.error}`, tone: "err" };
     case "cancelled":
       return { kind: "status", text: "Cancelled", tone: "muted" };
+    case "restoringContext":
+      return { kind: "status", text: "Restoring context…", tone: "muted" };
     case "permissionRequest":
       return { kind: "permission", description: u.description };
     case "permissionTimeout":
@@ -115,8 +120,16 @@ function parseHunks(diffText: string): string[] {
   return hunks;
 }
 
-/** Run status + updates stream + diff view + merge button + cancel button +
- * remove worktree button. Opens when clicking an AgentBadge. */
+/** 3661 → "1h 1m 1s"; 65 → "1m 5s". */
+function formatElapsed(secs: number): string {
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  return [h > 0 ? `${h}h` : null, h > 0 || m > 0 ? `${m}m` : null, `${s}s`]
+    .filter(Boolean)
+    .join(" ");
+}
+
 export default function AgentRunPanel(props: AgentRunPanelProps) {
   const [updates, setUpdates] = createSignal<ThreadMsg[]>([]);
   const [cursor, setCursor] = createSignal(0);
@@ -130,26 +143,24 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
   const [followupText, setFollowupText] = createSignal("");
   const [sendingFollowup, setSendingFollowup] = createSignal(false);
   const [resuming, setResuming] = createSignal(false);
+  // On-the-fly session config (model / effort) for the live run.
+  const [liveModel, setLiveModel] = createSignal("");
+  const [liveEffort, setLiveEffort] = createSignal("");
+  const [configBusy, setConfigBusy] = createSignal(false);
   // Permission requests go to the module-level FIFO queue in
   // PermissionDialog.tsx; a single global dialog renders the queue head. The
   // panel keeps no local state.
 
-  // Derived run identity + active flag. props.run is a fresh object on every
-  // panelRun refresh (Board polls every 2s), and Solid tracks the props
-  // getter read itself — an effect reading props.run re-fires on every
-  // refresh even when .id/.status are unchanged. Memoize the scalar fields
-  // so downstream effects depend on values, not object references.
+  // props.run is a fresh object each poll refresh; Solid tracks the props
+  // getter, not values — memoize scalars so effects fire on change.
   const runIdMemo = createMemo(() => props.run?.id ?? null);
   const runStatusMemo = createMemo(() => props.run?.status ?? null);
   const [runId, setRunId] = createSignal<string | null>(null);
   const [hasActive, setHasActive] = createSignal(false);
 
-  // Resizable panel — mirrors Settings.tsx. Size persists per-user via
+  // Resizable panel — shared helper. Size persists per-user via
   // the generic settings key/value store (agent_run_w / agent_run_h).
-  const [panelW, setPanelW] = createSignal(0);
-  const [panelH, setPanelH] = createSignal(0);
-  let panelEl: HTMLDivElement | undefined;
-  let resizeState: { x: number; y: number; w: number; h: number } | null = null;
+  const resize = panelResize("agent_run_w", "agent_run_h", 672, 560, 480, 360);
 
   let updatesEl: HTMLDivElement | undefined;
   // In-flight guard: prevents overlapping loadUpdates calls.
@@ -165,7 +176,6 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
     );
   });
 
-  // Restore saved panel size when the dialog opens.
   createEffect(() => {
     if (!props.open) return;
     void (async () => {
@@ -178,48 +188,6 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
       } catch { /* non-fatal: default size used */ }
     })();
   });
-
-  function onResizeStart(e: PointerEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-    const el = panelEl;
-    resizeState = {
-      x: e.clientX,
-      y: e.clientY,
-      w: el?.offsetWidth ?? 672,
-      h: el?.offsetHeight ?? 560,
-    };
-    window.addEventListener("pointermove", onResizeMove);
-    window.addEventListener("pointerup", onResizeEnd);
-  }
-  function onResizeMove(e: PointerEvent) {
-    if (!resizeState) return;
-    const maxW = window.innerWidth * 0.9;
-    const maxH = window.innerHeight * 0.9;
-    const w = Math.min(
-      Math.max(resizeState.w + (e.clientX - resizeState.x), 480),
-      maxW,
-    );
-    const h = Math.min(
-      Math.max(resizeState.h + (e.clientY - resizeState.y), 360),
-      maxH,
-    );
-    setPanelW(w);
-    setPanelH(h);
-  }
-  async function onResizeEnd() {
-    window.removeEventListener("pointermove", onResizeMove);
-    window.removeEventListener("pointerup", onResizeEnd);
-    const w = panelW();
-    const h = panelH();
-    resizeState = null;
-    if (w > 0 && h > 0) {
-      try {
-        await setSetting("agent_run_w", String(Math.round(w)));
-        await setSetting("agent_run_h", String(Math.round(h)));
-      } catch { /* non-fatal: size just won't persist */ }
-    }
-  }
 
   // Reset the stream/diff/merge state when switching to a different run.
   // `on` runs the effect whenever the id changes (including the first run).
@@ -236,6 +204,8 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
         setMergeResult(null);
         setWaitingForInput(false);
         setFollowupText("");
+        setLiveModel("");
+        setLiveEffort("");
       },
     ),
   );
@@ -277,10 +247,23 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
       if (!Array.isArray(newUpdates)) return;
       if (newUpdates.length > 0) {
         applyUpdates(newUpdates);
-      } else if (updates().length === 0 && isTerminal() && props.run?.output) {
-        // Buffer gone for a terminal run; show the persisted ACP output.
-        setUpdates([{ kind: "assistant", text: props.run.output }]);
-        setCursor(1);
+      } else if (updates().length === 0) {
+        // Buffer gone (app restart) → load the persisted transcript.
+        try {
+          const history = await acpLoadRunHistory(runId);
+          if (Array.isArray(history) && history.length > 0) {
+            applyUpdates(history);
+            return;
+          }
+        } catch {
+          // Non-fatal — fall through to the output fallback.
+        }
+        if (isTerminal() && props.run?.output) {
+          // No persisted stream either (pre-migration run); show the
+          // accumulated ACP output.
+          setUpdates([{ kind: "assistant", text: props.run.output }]);
+          setCursor(1);
+        }
       }
     } catch {
       // Non-fatal — event stream covers live updates.
@@ -293,9 +276,12 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
     const msgs = newUpdates
       .map(updateToThread)
       .filter((m): m is ThreadMsg => m !== null);
-    setUpdates((prev) => [...prev, ...msgs]);
+    setUpdates((prev) => {
+      const next = [...prev, ...msgs];
+      // Scrollback cap: drop oldest entries beyond ~2000.
+      return next.length > 2000 ? next.slice(next.length - 2000) : next;
+    });
     setCursor((c) => c + newUpdates.length);
-    // Auto-scroll to bottom.
     if (updatesEl) updatesEl.scrollTop = updatesEl.scrollHeight;
     for (const u of newUpdates) {
       if (u.type === "waitingForInput") {
@@ -328,43 +314,73 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
     }
   }
 
-  async function handleCancel() {
-    const run = props.run;
-    if (!run) return;
-    setBusy(true);
+  async function applySessionConfig(configId: string, value: string) {
+    const id = runId();
+    if (!id || !value.trim()) return;
+    setConfigBusy(true);
     try {
-      await acpCancelRun(run.id);
-      toaster.success({ title: "Run cancelled" });
+      await acpSetSessionConfig(id, configId, value.trim());
+      toaster.success({ title: `Applied ${configId}: ${value.trim()}` });
     } catch (e) {
       toaster.error({
-        title: "Cancel failed",
+        title: `Set ${configId} failed`,
         description: acpErrorMessage(e),
       });
     } finally {
-      setBusy(false);
+      setConfigBusy(false);
     }
   }
 
-  async function handleDiff() {
+  async function runAction(
+    failTitle: string,
+    fn: (run: AgentRun) => Promise<void>,
+  ) {
     const run = props.run;
     if (!run) return;
     setBusy(true);
     try {
-      const result = await acpDiffMain(run.cardId);
-      setDiff(result);
-      setShowDiff(true);
+      await fn(run);
     } catch (e) {
-      toaster.error({ title: "Diff failed", description: acpErrorMessage(e) });
+      toaster.error({ title: failTitle, description: acpErrorMessage(e) });
     } finally {
       setBusy(false);
     }
   }
 
-  async function handleMerge() {
-    const run = props.run;
-    if (!run) return;
-    setBusy(true);
-    try {
+  const handleCancel = () =>
+    runAction("Cancel failed", async (run) => {
+      await acpCancelRun(run.id);
+      toaster.success({ title: "Run cancelled" });
+    });
+
+  /** Check the agent subprocess: append pid + uptime as a status line. */
+  const handleCheckProcess = () =>
+    runAction("Check failed", async (run) => {
+      const info = await acpRunProcessInfo(run.id);
+      const text = info.pid
+        ? `Agent running · PID ${info.pid} · ${formatElapsed(info.elapsedSecs)}`
+        : `No agent process found · status=${info.status} · ${formatElapsed(info.elapsedSecs)}`;
+      setUpdates((prev) => [
+        ...prev,
+        { kind: "status", text, tone: info.pid ? "ok" : "muted" },
+      ]);
+      if (updatesEl) updatesEl.scrollTop = updatesEl.scrollHeight;
+    });
+
+  const handleDone = () =>
+    runAction("Done failed", async (run) => {
+      await acpCompleteRun(run.id);
+      toaster.success({ title: "Run completed" });
+    });
+
+  const handleDiff = () =>
+    runAction("Diff failed", async (run) => {
+      setDiff(await acpDiffMain(run.cardId));
+      setShowDiff(true);
+    });
+
+  const handleMerge = () =>
+    runAction("Merge failed", async (run) => {
       const result = await acpMerge(run.cardId);
       setMergeResult(result);
       if (result.success) {
@@ -375,29 +391,13 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
           description: `${result.conflicts.length} file(s) in conflict`,
         });
       }
-    } catch (e) {
-      toaster.error({ title: "Merge failed", description: acpErrorMessage(e) });
-    } finally {
-      setBusy(false);
-    }
-  }
+    });
 
-  async function handleRemoveWorktree() {
-    const run = props.run;
-    if (!run) return;
-    setBusy(true);
-    try {
+  const handleRemoveWorktree = () =>
+    runAction("Remove failed", async (run) => {
       await acpRemoveWorktree(run.cardId);
       toaster.success({ title: "Worktree removed" });
-    } catch (e) {
-      toaster.error({
-        title: "Remove failed",
-        description: acpErrorMessage(e),
-      });
-    } finally {
-      setBusy(false);
-    }
-  }
+    });
 
   async function handleResume() {
     const run = props.run;
@@ -434,9 +434,9 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
         <Dialog.Backdrop class="agent-backdrop fixed inset-0 z-50" />
         <Dialog.Positioner class="fixed inset-0 z-50 flex items-stretch justify-center">
           <Dialog.Content
-            ref={panelEl}
+            ref={resize.ref}
             class="agent-panel relative flex flex-col overflow-hidden"
-            style={{ width: panelW() ? `${panelW()}px` : undefined }}
+            style={{ width: resize.panelW() ? `${resize.panelW()}px` : undefined }}
           >
             <header class="agent-header">
               <span
@@ -463,6 +463,16 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
                 </div>
               </Show>
               <Show when={!isTerminal()}>
+                <button
+                  type="button"
+                  class="agent-stop"
+                  aria-label="Check agent process"
+                  title="Check agent process (pid + uptime)"
+                  disabled={busy()}
+                  onClick={handleCheckProcess}
+                >
+                  ?
+                </button>
                 <button
                   type="button"
                   class="agent-stop"
@@ -493,14 +503,12 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
                     {(m) => {
                       switch (m.kind) {
                         case "assistant":
-                          return (
-                            <article class="agent-turn">
-                              <pre class="agent-turn-text">{m.text}</pre>
-                            </article>
-                          );
+                          return <pre class="agent-turn-text">{m.text}</pre>;
+                        case "tool":
+                          return <p class="agent-tool">{m.text}</p>;
                         case "user":
                           return (
-                            <article class="agent-turn-user">{m.text}</article>
+                            <p class="agent-turn-user">{`❯ ${m.text}`}</p>
                           );
                         case "session":
                           return (
@@ -666,6 +674,15 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
                     >
                       ↑
                     </button>
+                    <button
+                      type="button"
+                      class="agent-done"
+                      data-testid="agent-done"
+                      disabled={busy()}
+                      onClick={handleDone}
+                    >
+                      Done
+                    </button>
                   </div>
                 </div>
               </Show>
@@ -708,29 +725,57 @@ export default function AgentRunPanel(props: AgentRunPanelProps) {
                   </button>
                 </div>
               </Show>
+              <Show when={hasActive()}>
+                <div class="agent-actionbar items-center gap-2">
+                  <input
+                    type="text"
+                    class="text-xs rounded px-2 py-1 bg-base text-ink border border-border-subtle outline-none focus:border-accent min-w-0 flex-1"
+                    placeholder="Model (e.g. opus)"
+                    value={liveModel()}
+                    onInput={(e) => setLiveModel(e.currentTarget.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void applySessionConfig("model", liveModel());
+                      }
+                    }}
+                    disabled={configBusy()}
+                  />
+                  <input
+                    type="text"
+                    class="text-xs rounded px-2 py-1 bg-base text-ink border border-border-subtle outline-none focus:border-accent min-w-0 flex-1"
+                    placeholder="Effort (e.g. high)"
+                    value={liveEffort()}
+                    onInput={(e) => setLiveEffort(e.currentTarget.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void applySessionConfig("effort", liveEffort());
+                      }
+                    }}
+                    disabled={configBusy()}
+                  />
+                  <button
+                    type="button"
+                    disabled={configBusy() || (!liveModel().trim() && !liveEffort().trim())}
+                    onClick={() => {
+                      if (liveModel().trim()) {
+                        void applySessionConfig("model", liveModel());
+                      }
+                      if (liveEffort().trim()) {
+                        void applySessionConfig("effort", liveEffort());
+                      }
+                    }}
+                  >
+                    Apply
+                  </button>
+                </div>
+              </Show>
             </footer>
 
             <div
               class="settings-grip"
-              onPointerDown={onResizeStart}
-              onKeyDown={(e) => {
-                const step = e.shiftKey ? 20 : 5;
-                if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-                  e.preventDefault();
-                  setPanelW((w) => Math.min(w + step, window.innerWidth * 0.9));
-                  setPanelH((h) =>
-                    Math.min(h + step, window.innerHeight * 0.9)
-                  );
-                } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
-                  e.preventDefault();
-                  setPanelW((w) => Math.max(w - step, 480));
-                  setPanelH((h) => Math.max(h - step, 360));
-                }
-              }}
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize agent run panel"
-              tabindex={0}
+              {...resize.gripProps("Resize agent run panel")}
             />
           </Dialog.Content>
         </Dialog.Positioner>

@@ -89,23 +89,6 @@ pub fn get_latest_run_for_card(
     }
 }
 
-/// Update the worktree_path, branch, and status for a run (called after the
-/// worktree is created, replacing the placeholder values from insert_run).
-pub fn update_worktree_branch(
-    conn: &Connection,
-    id: &str,
-    worktree_path: &str,
-    branch: &str,
-    status: &str,
-) -> Result<(), AcpError> {
-    conn.execute(
-        "UPDATE agent_runs SET worktree_path = ?1, branch = ?2, status = ?3 WHERE id = ?4",
-        params![worktree_path, branch, status, id],
-    )
-    .map_err(AcpError::internal)?;
-    Ok(())
-}
-
 /// Get a single run by id.
 pub fn get_run(conn: &Connection, id: &str) -> Result<Option<AgentRun>, AcpError> {
     let row = conn.query_row(
@@ -168,7 +151,17 @@ pub fn set_merged(conn: &Connection, id: &str, merged_at: &str) -> Result<(), Ac
 
 /// List all active runs.
 pub fn list_active(conn: &Connection) -> Result<Vec<AgentRun>, AcpError> {
-    list_runs_with_filter(conn, "status IN ('pending', 'running')")
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT {RUN_COLUMNS} FROM agent_runs WHERE status IN ('pending', 'running')"
+        ))
+        .map_err(AcpError::internal)?;
+    let rows = stmt.query_map([], row_to_run).map_err(AcpError::internal)?;
+    let mut runs = Vec::new();
+    for r in rows {
+        runs.push(r.map_err(AcpError::internal)?);
+    }
+    Ok(runs)
 }
 
 /// List recent runs (newest first).
@@ -229,20 +222,6 @@ pub fn list_runs_for_agent(conn: &Connection, agent_name: &str) -> Result<Vec<Ag
     Ok(runs)
 }
 
-fn list_runs_with_filter(conn: &Connection, filter: &str) -> Result<Vec<AgentRun>, AcpError> {
-    let mut stmt = conn
-        .prepare(&format!(
-            "SELECT {RUN_COLUMNS} FROM agent_runs WHERE {filter}"
-        ))
-        .map_err(AcpError::internal)?;
-    let rows = stmt.query_map([], row_to_run).map_err(AcpError::internal)?;
-    let mut runs = Vec::new();
-    for r in rows {
-        runs.push(r.map_err(AcpError::internal)?);
-    }
-    Ok(runs)
-}
-
 fn row_to_run(r: &rusqlite::Row) -> rusqlite::Result<AgentRun> {
     let skills_json: String = r.get(12)?;
     Ok(AgentRun {
@@ -266,8 +245,7 @@ fn row_to_run(r: &rusqlite::Row) -> rusqlite::Result<AgentRun> {
 
 /// Persist the worktree path, branch, and repo root for a run (called
 /// after the worktree is created, replacing the placeholder values from
-/// `insert_run`). Distinct from `update_worktree_branch`, which also flips
-/// `status` and predates `repo_root`.
+/// `insert_run`).
 pub fn set_worktree_info(
     conn: &Connection,
     id: &str,
@@ -302,9 +280,103 @@ pub fn is_tree_source_locked(conn: &Connection, tree_source_id: &str) -> bool {
     .unwrap_or(false)
 }
 
+// ---------------------------------------------------------------------------
+// Handoffs (resume context) + persisted run update stream.
+// ---------------------------------------------------------------------------
+
+/// A stored handoff document for a run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentHandoff {
+    pub run_id: String,
+    pub content: String,
+    /// How it was produced: 'summary' (agent-generated) or 'truncated'
+    /// (fallback tail of the run output).
+    pub source: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Get the handoff row for a run, if any.
+pub fn get_handoff(conn: &Connection, run_id: &str) -> Result<Option<AgentHandoff>, AcpError> {
+    let row = conn.query_row(
+        "SELECT run_id, content, source, created_at, updated_at
+         FROM agent_handoffs WHERE run_id = ?1",
+        params![run_id],
+        |r| {
+            Ok(AgentHandoff {
+                run_id: r.get(0)?,
+                content: r.get(1)?,
+                source: r.get(2)?,
+                created_at: r.get(3)?,
+                updated_at: r.get(4)?,
+            })
+        },
+    );
+    match row {
+        Ok(h) => Ok(Some(h)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(AcpError::internal(e.to_string())),
+    }
+}
+
+/// Insert or replace the handoff row for a run (idempotent by PK).
+pub fn upsert_handoff(
+    conn: &Connection,
+    run_id: &str,
+    content: &str,
+    source: &str,
+) -> Result<(), AcpError> {
+    let now = now_iso();
+    conn.execute(
+        "INSERT INTO agent_handoffs (run_id, content, source, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?4)
+         ON CONFLICT(run_id) DO UPDATE SET
+           content = ?2, source = ?3, updated_at = ?4",
+        params![run_id, content, source, now],
+    )
+    .map_err(AcpError::internal)?;
+    Ok(())
+}
+
+/// Append one serialized update to the run's persisted stream.
+pub fn insert_run_update(
+    conn: &Connection,
+    run_id: &str,
+    update_json: &str,
+) -> Result<(), AcpError> {
+    conn.execute(
+        "INSERT INTO agent_run_updates (run_id, update_json, created_at) VALUES (?1, ?2, ?3)",
+        params![run_id, update_json, now_iso()],
+    )
+    .map_err(AcpError::internal)?;
+    Ok(())
+}
+
+/// Load the full persisted update stream for a run, oldest first.
+/// Returns raw JSON strings; the caller deserializes into `RunUpdate`.
+pub fn list_run_updates(conn: &Connection, run_id: &str) -> Result<Vec<String>, AcpError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT update_json FROM agent_run_updates WHERE run_id = ?1 ORDER BY seq ASC",
+        )
+        .map_err(AcpError::internal)?;
+    let rows = stmt
+        .query_map(params![run_id], |r| r.get::<_, String>(0))
+        .map_err(AcpError::internal)?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(AcpError::internal)?);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{get_run, insert_run, is_tree_source_locked, set_worktree_info};
+    use super::{
+        get_handoff, get_run, insert_run, insert_run_update, is_tree_source_locked,
+        list_run_updates, set_worktree_info, upsert_handoff,
+    };
     use crate::db::agents;
     use crate::db::test_db;
     use rusqlite::{params, Connection};
@@ -439,5 +511,58 @@ mod tests {
         .unwrap();
 
         assert!(!is_tree_source_locked(&conn, "ts-1"));
+    }
+
+    #[test]
+    fn handoff_upsert_get_roundtrip() {
+        let conn = test_db();
+        insert_card(&conn, "c-1", None);
+        agents::insert_agent(&conn, "claude", "echo", "Test", false, true, &[]).unwrap();
+        insert_run(&conn, "r-1", "c-1", "claude", "wt", "agent/c-1", "completed", &[]).unwrap();
+
+        assert!(get_handoff(&conn, "r-1").unwrap().is_none());
+        upsert_handoff(&conn, "r-1", "did X, then Y", "summary").unwrap();
+        let h = get_handoff(&conn, "r-1").unwrap().unwrap();
+        assert_eq!(h.content, "did X, then Y");
+        assert_eq!(h.source, "summary");
+
+        // Idempotent upsert: same PK row, content + updated_at refreshed.
+        upsert_handoff(&conn, "r-1", "regenerated", "truncated").unwrap();
+        let h = get_handoff(&conn, "r-1").unwrap().unwrap();
+        assert_eq!(h.content, "regenerated");
+        assert_eq!(h.source, "truncated");
+    }
+
+    #[test]
+    fn handoff_cascades_on_run_delete() {
+        let conn = test_db();
+        insert_card(&conn, "c-1", None);
+        agents::insert_agent(&conn, "claude", "echo", "Test", false, true, &[]).unwrap();
+        insert_run(&conn, "r-1", "c-1", "claude", "wt", "agent/c-1", "completed", &[]).unwrap();
+        upsert_handoff(&conn, "r-1", "ctx", "summary").unwrap();
+        insert_run_update(&conn, "r-1", r#"{"type":"cancelled"}"#).unwrap();
+
+        super::delete_run(&conn, "r-1").unwrap();
+        assert!(get_handoff(&conn, "r-1").unwrap().is_none());
+        assert!(list_run_updates(&conn, "r-1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn run_updates_roundtrip_ordered() {
+        let conn = test_db();
+        insert_card(&conn, "c-1", None);
+        agents::insert_agent(&conn, "claude", "echo", "Test", false, true, &[]).unwrap();
+        insert_run(&conn, "r-1", "c-1", "claude", "wt", "agent/c-1", "running", &[]).unwrap();
+
+        insert_run_update(&conn, "r-1", r#"{"type":"sessionId","sessionId":"s1"}"#).unwrap();
+        insert_run_update(&conn, "r-1", r#"{"type":"sessionUpdate","text":"a"}"#).unwrap();
+        insert_run_update(&conn, "r-1", r#"{"type":"cancelled"}"#).unwrap();
+
+        let rows = list_run_updates(&conn, "r-1").unwrap();
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].contains("sessionId"));
+        assert!(rows[2].contains("cancelled"));
+        // Unknown run → empty, not an error.
+        assert!(list_run_updates(&conn, "nope").unwrap().is_empty());
     }
 }

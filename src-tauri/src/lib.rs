@@ -2,9 +2,11 @@ pub mod cli;
 pub mod db;
 mod editor;
 pub mod error;
+pub mod handoff;
 mod mapping;
 mod mcp;
 pub mod runner;
+pub mod session;
 pub mod skills;
 mod source;
 mod sync;
@@ -73,15 +75,10 @@ pub fn run() {
             db::cards::update_card,
             db::cards::move_card,
             db::cards::delete_card,
-            db::cards::is_card_locked_cmd,
             db::cards::delete_all_source_cards,
-            db::cards::get_card_by_source_ref,
             db::settings::get_setting,
             db::settings::set_setting,
             db::settings::get_all_settings,
-            db::settings::save_settings,
-            db::settings::get_snapshot,
-            db::settings::save_snapshot,
             db::settings::list_tree_sources,
             db::settings::add_tree_source,
             db::settings::update_tree_source,
@@ -108,17 +105,16 @@ pub fn run() {
             runner::acp_list_active_runs,
             runner::acp_create_run,
             runner::acp_resume_run,
-            runner::acp_get_run,
-            runner::acp_get_run_for_card,
             runner::acp_latest_run_for_card,
             runner::acp_list_updates,
-            runner::acp_has_updates,
-            runner::acp_list_runs,
+            runner::acp_load_run_history,
+            runner::acp_run_process_info,
             runner::acp_list_recent_runs,
-            runner::acp_cleanup,
             runner::acp_cancel_run,
+            runner::acp_complete_run,
             runner::acp_respond_permission,
             runner::acp_send_followup,
+            runner::acp_set_session_config,
             runner::acp_diff_main,
             runner::acp_merge,
             runner::acp_remove_worktree,
@@ -132,18 +128,14 @@ pub fn run() {
 /// read config before the frontend has loaded. Returns `None` if the DB or row
 /// is missing.
 pub fn read_setting<R: tauri::Runtime>(app: &tauri::AppHandle<R>, key: &str) -> Option<String> {
-    let dir = app.path().app_config_dir().ok()?;
-    let db_path = dir.join("tasker.db");
+    let db_path = app.path().app_config_dir().ok()?.join("tasker.db");
     if !db_path.exists() {
         return None;
     }
     // Use the shared opener so WAL + busy_timeout + FK pragmas match the
     // rest of the app (avoids locked/FK-disabled reads).
     let conn = db::open_db_path(&db_path).ok()?;
-    conn.query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
-        r.get::<_, String>(0)
-    })
-    .ok()
+    db::read_setting(&conn, key)
 }
 
 /// Read `mcp_enabled` + `mcp_port` from the settings table via rusqlite, so the

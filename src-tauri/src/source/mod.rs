@@ -172,14 +172,7 @@ fn map_raw_card(
 async fn load_instance(
     app: &AppHandle,
     source_id: &str,
-) -> Result<
-    (
-        SourceInstance,
-        &'static str,
-        &'static Box<dyn SourceProvider>,
-    ),
-    String,
-> {
+) -> Result<(SourceInstance, &'static Box<dyn SourceProvider>), String> {
     // Use the non-redacting read so backend callers (sync, fetch_options)
     // get the real `config.token` needed to authenticate upstream. The IPC
     // `get_source` command masks the token for the UI; using it here would
@@ -195,15 +188,15 @@ async fn load_instance(
             instance.source_type
         )
     })?;
-    let source_type = provider.source_type();
-    Ok((instance, source_type, provider))
+    Ok((instance, provider))
 }
 
 /// Fetch cards from a source and apply status/priority mapping. Returns the
 /// mapped cards plus any upstream statuses the user's mapping doesn't cover.
 #[tauri::command]
 pub async fn fetch_source_cards(app: AppHandle, source_id: String) -> Result<FetchResult, String> {
-    let (instance, source_type, provider) = load_instance(&app, &source_id).await?;
+    let (instance, provider) = load_instance(&app, &source_id).await?;
+    let source_type = provider.source_type();
     let raw_cards = provider.fetch_raw(&instance.config).await?;
 
     let mut cards = Vec::with_capacity(raw_cards.len());
@@ -228,7 +221,7 @@ pub async fn fetch_source_options(
     app: AppHandle,
     source_id: String,
 ) -> Result<serde_json::Value, String> {
-    let (instance, _source_type, provider) = load_instance(&app, &source_id).await?;
+    let (instance, provider) = load_instance(&app, &source_id).await?;
     provider.fetch_options(&instance.config).await
 }
 
@@ -259,12 +252,12 @@ pub async fn list_source_types() -> Result<Vec<SourceTypeMeta>, String> {
 /// pending-conflict write from this run.
 #[tauri::command]
 pub async fn sync_source(app: AppHandle, source_id: String) -> Result<SyncResult, String> {
-    let (instance, source_type, provider) = load_instance(&app, &source_id).await?;
+    let (instance, provider) = load_instance(&app, &source_id).await?;
     let mut conn = open_db(&app)?;
     sync_source_inner(
         &mut conn,
         &source_id,
-        source_type,
+        provider.source_type(),
         &instance.status_mapping,
         provider.as_ref(),
         &instance.config,

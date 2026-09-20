@@ -63,12 +63,9 @@ test("Menu: Shift+F10 opens card menu, ArrowDown moves focus, Escape closes", as
   const content = await findByRole("menu");
   assertTrue(content, "menu content rendered after Shift+F10");
 
-  // ArrowDown: dispatch on the menu content. Solid's delegated keydown
-  // listener on the document routes it to the menu's onKeyDown handler.
   content.dispatchEvent(
     new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }),
   );
-  // Give the state machine a tick to process the event.
   await new Promise((r) => setTimeout(r, 10));
 
   const items = document.querySelectorAll('[role="menuitem"]');

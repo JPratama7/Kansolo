@@ -7,6 +7,7 @@ import type {
   DiffResult,
   KanbanCard,
   MergeResult,
+  RunProcessInfo,
   RunUpdate,
   SkillManifest,
   SourceInstance,
@@ -65,10 +66,6 @@ export async function deleteCard(id: string) {
   await invoke("delete_card", { id });
 }
 
-export async function isCardLocked(id: string): Promise<boolean> {
-  return invoke<boolean>("is_card_locked_cmd", { id });
-}
-
 /** Delete every card sourced from a source instance (looked up by its
  * `sources.id`) and its sync snapshots. Local cards stay. The Rust command
  * resolves the instance id → source_type inside one transaction. */
@@ -106,7 +103,6 @@ export async function updateSource(
   await invoke("update_source", { id, label, config, statusMapping, enabled });
 }
 
-/** Delete a source instance (and its cards/snapshots). */
 export async function deleteSource(id: string): Promise<void> {
   await invoke("delete_source", { id });
 }
@@ -184,8 +180,19 @@ export async function acpRegisterAgent(
   command: string,
   description: string,
   skills: string[],
+  model: string | null,
+  effort: string | null,
+  systemPrompt: string,
 ): Promise<void> {
-  await invoke("acp_register_agent", { name, command, description, skills });
+  await invoke("acp_register_agent", {
+    name,
+    command,
+    description,
+    skills,
+    model,
+    effort,
+    systemPrompt,
+  });
 }
 
 export async function acpUpdateAgent(
@@ -193,8 +200,19 @@ export async function acpUpdateAgent(
   command: string,
   description: string,
   skills: string[],
+  model: string | null,
+  effort: string | null,
+  systemPrompt: string,
 ): Promise<void> {
-  await invoke("acp_update_agent", { name, command, description, skills });
+  await invoke("acp_update_agent", {
+    name,
+    command,
+    description,
+    skills,
+    model,
+    effort,
+    systemPrompt,
+  });
 }
 
 export async function acpDeleteAgent(
@@ -216,22 +234,29 @@ export async function acpCreateRun(
   cardId: string,
   agentName: string,
   skillNames: string[],
+  model: string | null = null,
+  effort: string | null = null,
 ): Promise<AgentRun> {
-  return invoke<AgentRun>("acp_create_run", { cardId, agentName, skillNames });
+  return invoke<AgentRun>("acp_create_run", {
+    cardId,
+    agentName,
+    skillNames,
+    model,
+    effort,
+  });
+}
+
+/** Change a session config option ("model" / "effort") on a live run. */
+export async function acpSetSessionConfig(
+  runId: string,
+  configId: string,
+  value: string,
+): Promise<void> {
+  await invoke("acp_set_session_config", { runId, configId, value });
 }
 
 export async function acpResumeRun(runId: string): Promise<AgentRun> {
   return invoke<AgentRun>("acp_resume_run", { runId });
-}
-
-export async function acpGetRun(runId: string): Promise<AgentRun | null> {
-  return invoke<AgentRun | null>("acp_get_run", { runId });
-}
-
-export async function acpGetRunForCard(
-  cardId: string,
-): Promise<AgentRun | null> {
-  return invoke<AgentRun | null>("acp_get_run_for_card", { cardId });
 }
 
 /** Most recent run for a card, regardless of status (active or terminal).
@@ -240,14 +265,6 @@ export async function acpLatestRunForCard(
   cardId: string,
 ): Promise<AgentRun | null> {
   return invoke<AgentRun | null>("acp_latest_run_for_card", { cardId });
-}
-
-export async function acpHasUpdates(runId: string): Promise<boolean> {
-  return invoke<boolean>("acp_has_updates", { runId });
-}
-
-export async function acpListRuns(limit?: number): Promise<AgentRun[]> {
-  return invoke<AgentRun[]>("acp_list_runs", { limit });
 }
 
 /** Recent runs (newest first), any status. Compact feed for UI status
@@ -274,10 +291,6 @@ export async function acpPermissionTimeoutMs(): Promise<number> {
   return cachedPermissionTimeoutMs;
 }
 
-export async function acpCleanup(): Promise<string[]> {
-  return invoke<string[]>("acp_cleanup");
-}
-
 export async function acpListUpdates(
   runId: string,
   cursor: number,
@@ -285,8 +298,22 @@ export async function acpListUpdates(
   return invoke<RunUpdate[]>("acp_list_updates", { runId, cursor });
 }
 
+/** Full persisted transcript for a run (panel history after app restart). */
+export async function acpLoadRunHistory(runId: string): Promise<RunUpdate[]> {
+  return invoke<RunUpdate[]>("acp_load_run_history", { runId });
+}
+
+/** Live process info for a run's agent subprocess (pid + uptime). */
+export async function acpRunProcessInfo(runId: string): Promise<RunProcessInfo> {
+  return invoke<RunProcessInfo>("acp_run_process_info", { runId });
+}
+
 export async function acpCancelRun(runId: string): Promise<void> {
   await invoke("acp_cancel_run", { runId });
+}
+
+export async function acpCompleteRun(runId: string): Promise<void> {
+  await invoke("acp_complete_run", { runId });
 }
 
 export async function acpSendFollowup(

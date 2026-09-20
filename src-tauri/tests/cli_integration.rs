@@ -45,7 +45,10 @@ fn test_db() -> Connection {
              built_in INTEGER NOT NULL DEFAULT 0,
              enabled INTEGER NOT NULL DEFAULT 1,
              skills_json TEXT NOT NULL DEFAULT '[]',
-             created_at TEXT NOT NULL
+             created_at TEXT NOT NULL,
+             model TEXT,
+             effort TEXT,
+             system_prompt TEXT NOT NULL DEFAULT ''
            );
            CREATE TABLE agent_runs (
              id TEXT PRIMARY KEY,
@@ -163,6 +166,9 @@ fn cli_agents_edit_updates_command_and_skills() {
         "cmd2",
         "desc2",
         &["s2".to_string(), "s3".to_string()],
+        None,
+        None,
+        "",
     )
     .unwrap();
     let agent = agents::get_agent(&conn, "dev").unwrap().unwrap();
@@ -195,7 +201,6 @@ fn cli_agents_remove_blocked_if_runs_exist() {
         &[],
     )
     .unwrap();
-    // delete_agent with delete_runs=false should fail.
     let result = agents::delete_agent(&conn, "a", false);
     assert!(result.is_err());
 }
@@ -317,7 +322,6 @@ fn cli_run_card_lock_prevents_second_run() {
     )
     .unwrap();
     assert!(agent_runs::is_card_locked(&conn, "c-1"));
-    // CLI checks is_card_locked before creating a second run.
 }
 
 #[test]

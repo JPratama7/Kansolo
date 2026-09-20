@@ -48,10 +48,8 @@ test("Toast action after originating component unmount: no crash, dismisses clea
     },
   });
 
-  // Wait for the toast to render in the portal.
   await new Promise((r) => setTimeout(r, 10));
 
-  // Simulate the originating component's data being gone (card deleted).
   setCard(null);
 
   // Action button renders as a <button> via Toast.ActionTrigger.
@@ -62,9 +60,6 @@ test("Toast action after originating component unmount: no crash, dismisses clea
   if (!btn) throw new Error("Discard action button not found in portal");
   btn.click();
 
-  // Wait for the toast to be dismissed from the DOM (the dismiss is
-  // async — the toast machine processes the DISMISS event and the
-  // Toaster re-renders without the toast).
   await waitFor(() => {
     const toastStillPresent = document.body.textContent?.includes("Discard?") ??
       false;

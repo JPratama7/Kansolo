@@ -24,37 +24,25 @@ pub struct AcpError {
     pub message: String,
 }
 
+/// One 5-line constructor per code variant.
+macro_rules! acp_err {
+    ($name:ident, $code:ident) => {
+        pub fn $name(msg: impl ToString) -> Self {
+            Self {
+                code: AcpErrorCode::$code,
+                message: msg.to_string(),
+            }
+        }
+    };
+}
+
 impl AcpError {
-    pub fn internal(msg: impl ToString) -> Self {
-        Self {
-            code: AcpErrorCode::Internal,
-            message: msg.to_string(),
-        }
-    }
-    pub fn not_found(msg: impl ToString) -> Self {
-        Self {
-            code: AcpErrorCode::NotFound,
-            message: msg.to_string(),
-        }
-    }
-    pub fn locked(msg: impl ToString) -> Self {
-        Self {
-            code: AcpErrorCode::Locked,
-            message: msg.to_string(),
-        }
-    }
-    pub fn validation(msg: impl ToString) -> Self {
-        Self {
-            code: AcpErrorCode::Validation,
-            message: msg.to_string(),
-        }
-    }
-    pub fn conflict(msg: impl ToString) -> Self {
-        Self {
-            code: AcpErrorCode::Conflict,
-            message: msg.to_string(),
-        }
-    }
+    acp_err!(internal, Internal);
+    acp_err!(not_found, NotFound);
+    acp_err!(locked, Locked);
+    acp_err!(validation, Validation);
+    acp_err!(conflict, Conflict);
+
     /// Delete blocked by existing runs. `name` is the agent name;
     /// suggest `delete_runs=true` to cascade.
     pub fn agent_has_runs(name: impl ToString) -> Self {
