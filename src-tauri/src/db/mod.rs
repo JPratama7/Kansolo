@@ -1,3 +1,4 @@
+use crate::mapping::StatusMapping;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -99,15 +100,21 @@ pub struct ExternalSnapshot {
     pub synced_at: String,
 }
 
-/// Re-export `StatusMapping` from the mapping module so callers that import
-/// `db::StatusMapping` keep working.
-pub use crate::mapping::StatusMapping;
+/// Read a single setting value by key; `None` if absent or the read fails.
+/// One shared reader for every backend path that needs a setting.
+pub fn read_setting(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        rusqlite::params![key],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
 
 /// Read the last-synced snapshot for a `(source, source_ref)` pair, if any.
 /// Inner helper that runs on a borrowed connection (works inside a
 /// `Transaction` via deref coercion) so `sync_source` can do all its
-/// reads/writes on one atomic transaction. Mirrors the `get_snapshot`
-/// Tauri command in `db::settings`.
+/// reads/writes on one atomic transaction.
 pub fn get_snapshot_inner(
     conn: &Connection,
     source_instance_id: &str,
@@ -145,7 +152,6 @@ pub fn get_snapshot_inner(
 /// state at this sync instant. Inner helper that runs on a borrowed
 /// connection (works inside a `Transaction` via deref coercion) so
 /// `sync_source` can do all its reads/writes on one atomic transaction.
-/// Mirrors the `save_snapshot` Tauri command in `db::settings`.
 pub fn save_snapshot_inner(conn: &Connection, snap: &ExternalSnapshot) -> Result<(), String> {
     conn.execute(
         r#"INSERT INTO external_snapshots
@@ -225,6 +231,14 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../../migrations/0013_source_instance_id.sql"),
     ),
     (14, include_str!("../../migrations/0014_drop_repo_path.sql")),
+    (
+        15,
+        include_str!("../../migrations/0015_agent_model_effort.sql"),
+    ),
+    (
+        16,
+        include_str!("../../migrations/0016_agent_handoffs.sql"),
+    ),
 ];
 
 /// Apply pending DB migrations via rusqlite. Idempotent — skips already-applied
@@ -415,15 +429,12 @@ mod fk_tests {
                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"#,
             rusqlite::params!["c-1", "Test card", "backlog", "local", 1, "ts-1", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"],
         ).unwrap();
-        // Unlink the card
         conn.execute(
             "UPDATE cards SET tree_source_id = NULL WHERE id = ?1",
             rusqlite::params!["c-1"],
         )
         .unwrap();
-        // Pre-check now passes
         crate::db::settings::ensure_tree_source_deletable(&conn, "ts-1").unwrap();
-        // Delete succeeds
         conn.execute(
             "DELETE FROM tree_sources WHERE id = ?1",
             rusqlite::params!["ts-1"],

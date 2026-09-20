@@ -180,6 +180,17 @@ function App() {
     }`;
   }
 
+  /** Drop conflict state and stop the sync spinner. */
+  function resetSyncState() {
+    setConflicts(null);
+    setPendingSourceId(null);
+    setPendingSources([]);
+    setPendingUnmatched(new Set());
+    setPendingSummary([]);
+    setConflictSyncedAt(null);
+    setSyncing(false);
+  }
+
   return (
     <div class="h-full flex flex-col bg-base">
       <a
@@ -308,25 +319,11 @@ function App() {
         conflicts={conflicts() ?? []}
         open={!!conflicts()}
         onOpenChange={(o) => {
-          if (!o) {
-            setConflicts(null);
-            setPendingSourceId(null);
-            setPendingSources([]);
-            setPendingUnmatched(new Set());
-            setPendingSummary([]);
-            setConflictSyncedAt(null);
-            setSyncing(false);
-          }
+          if (!o) resetSyncState();
         }}
         onResolve={(resolutions) => void handleResolve(resolutions)}
         onCancel={() => {
-          setConflicts(null);
-          setPendingSourceId(null);
-          setPendingSources([]);
-          setPendingUnmatched(new Set());
-          setPendingSummary([]);
-          setConflictSyncedAt(null);
-          setSyncing(false);
+          resetSyncState();
           void reload();
         }}
       />

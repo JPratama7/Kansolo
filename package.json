@@ -6,6 +6,8 @@
   "scripts": {
     "start": "vite",
     "dev": "vite",
+    "lint": "biome check .",
+    "format": "biome format --write .",
     "build": "vite build",
     "serve": "vite preview",
     "tauri": "tauri"
@@ -24,6 +26,7 @@
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.14",
     "@playwright/test": "^1.62.1",
     "@solidjs/testing-library": "^0.8.10",
     "happy-dom": "^20.11.6",

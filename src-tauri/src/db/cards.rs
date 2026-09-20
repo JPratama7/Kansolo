@@ -211,13 +211,6 @@ pub async fn delete_card(app: AppHandle, id: String) -> Result<(), String> {
     Ok(())
 }
 
-/// Check whether a card has an active (pending/running) agent run.
-#[tauri::command]
-pub async fn is_card_locked_cmd(app: AppHandle, id: String) -> Result<bool, String> {
-    let conn = open_db(&app)?;
-    Ok(crate::db::agent_runs::is_card_locked(&conn, &id))
-}
-
 /// Atomically remove every card + snapshot belonging to a source instance
 /// (looked up by its `sources.id`). Wraps both deletes in a single
 /// transaction so a crash between them can't leave orphaned snapshots
@@ -295,18 +288,6 @@ pub fn get_card_by_source_ref_inner(
     } else {
         Ok(None)
     }
-}
-
-/// Tauri command wrapper — opens a fresh connection and delegates to
-/// [`get_card_by_source_ref_inner`].
-#[tauri::command]
-pub async fn get_card_by_source_ref(
-    app: AppHandle,
-    source: String,
-    source_ref: String,
-) -> Result<Option<Card>, String> {
-    let conn = open_db(&app)?;
-    get_card_by_source_ref_inner(&conn, &source, &source_ref)
 }
 
 /// Resolve a card's repo path via its `tree_source_id`. Used by the ACP
@@ -435,16 +416,6 @@ fn insert_synced_card(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
-}
-
-/// Tauri command wrapper — opens a fresh connection and delegates to
-/// [`upsert_card_from_sync_inner`]. Registered as a Tauri command for
-/// completeness; the lib.rs invoke_handler registration is owned by
-/// another node.
-#[tauri::command]
-pub async fn upsert_card_from_sync(app: AppHandle, card: Card) -> Result<(), String> {
-    let conn = open_db(&app)?;
-    upsert_card_from_sync_inner(&conn, &card)
 }
 
 #[cfg(test)]

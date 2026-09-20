@@ -67,6 +67,18 @@ pub fn run_mock_server() {
                     std::thread::sleep(std::time::Duration::from_secs(120));
                     break;
                 }
+                // Fail the prompt turn (JSON-RPC error) — for testing the
+                // handoff summarizer's spawn-failure fallback path.
+                if std::env::var("MOCK_ACP_FAIL").is_ok() {
+                    send(
+                        &mut out,
+                        serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32000, "message": "mock failure" },
+                        }),
+                    );
+                    continue;
+                }
                 for i in 0..updates {
                     let notif = serde_json::json!({
                         "jsonrpc": "2.0",

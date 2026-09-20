@@ -2,6 +2,7 @@ import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Dialog } from "@ark-ui/solid/dialog";
 import { toaster } from "./ui/toaster.ts";
+import { STATUS_LABEL } from "./ui/consts.ts";
 import AgentRunPanel from "./AgentRunPanel.tsx";
 import type { AgentRun } from "../types.ts";
 import {
@@ -18,14 +19,6 @@ export interface AgentManagerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
-
-const STATUS_LABEL: Record<string, string> = {
-  pending: "Queued",
-  running: "Running",
-  completed: "Completed",
-  failed: "Failed",
-  cancelled: "Cancelled",
-};
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -73,70 +66,45 @@ export default function AgentManager(props: AgentManagerProps) {
     setPanelOpen(true);
   }
 
-  async function cancelRun(run: AgentRun) {
+  /** Run one action against a run with busy + toast + refresh. */
+  async function runOn(
+    run: AgentRun,
+    failTitle: string,
+    fn: () => Promise<void>,
+    okTitle?: string,
+  ) {
     setBusyId(run.id);
     try {
-      await acpCancelRun(run.id);
-      toaster.success({ title: "Run cancelled" });
+      await fn();
+      if (okTitle) toaster.success({ title: okTitle });
       await refresh();
     } catch (e) {
-      toaster.error({
-        title: "Cancel failed",
-        description: acpErrorMessage(e),
-      });
+      toaster.error({ title: failTitle, description: acpErrorMessage(e) });
     } finally {
       setBusyId(null);
     }
   }
 
-  async function mergeRun(run: AgentRun) {
-    setBusyId(run.id);
-    try {
+  const cancelRun = (run: AgentRun) =>
+    runOn(run, "Cancel failed", () => acpCancelRun(run.id), "Run cancelled");
+
+  const mergeRun = (run: AgentRun) =>
+    runOn(run, "Merge failed", async () => {
       const result = await acpMerge(run.cardId);
       if (result.success) toaster.success({ title: "Merged successfully" });
-      else {toaster.warning({
+      else {
+        toaster.warning({
           title: "Merge conflicts",
           description: `${result.conflicts.length} file(s)`,
-        });}
-      await refresh();
-    } catch (e) {
-      toaster.error({ title: "Merge failed", description: acpErrorMessage(e) });
-    } finally {
-      setBusyId(null);
-    }
-  }
+        });
+      }
+    });
 
-  async function removeWorktree(run: AgentRun) {
-    setBusyId(run.id);
-    try {
-      await acpRemoveWorktree(run.cardId);
-      toaster.success({ title: "Worktree removed" });
-      await refresh();
-    } catch (e) {
-      toaster.error({
-        title: "Remove failed",
-        description: acpErrorMessage(e),
-      });
-    } finally {
-      setBusyId(null);
-    }
-  }
+  const removeWorktree = (run: AgentRun) =>
+    runOn(run, "Remove failed", () => acpRemoveWorktree(run.cardId), "Worktree removed");
 
-  async function deleteRun(run: AgentRun) {
-    setBusyId(run.id);
-    try {
-      await acpDeleteRun(run.id);
-      toaster.success({ title: "Run removed" });
-      await refresh();
-    } catch (e) {
-      toaster.error({
-        title: "Remove failed",
-        description: acpErrorMessage(e),
-      });
-    } finally {
-      setBusyId(null);
-    }
-  }
+  const deleteRun = (run: AgentRun) =>
+    runOn(run, "Remove failed", () => acpDeleteRun(run.id), "Run removed");
 
   const isActive = (r: AgentRun) =>
     r.status === "pending" || r.status === "running";

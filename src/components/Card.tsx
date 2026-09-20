@@ -1,17 +1,11 @@
 import { Show } from "solid-js";
 import { createDraggable, useDragDropContext } from "@thisbeyond/solid-dnd";
 import Markdown from "./Markdown.tsx";
-import type { KanbanCard, Priority, TreeSource } from "../types.ts";
+import type { KanbanCard, TreeSource } from "../types.ts";
 import type { AgentRun } from "../db.ts";
 import AgentBadge from "./AgentBadge.tsx";
-
-declare module "solid-js" {
-  namespace JSX {
-    interface Directives {
-      draggable: (el: HTMLElement, accessor: () => unknown) => void;
-    }
-  }
-}
+import { PRIORITY_STRIP } from "./ui/consts.ts";
+import "./ui/dnd-directives.ts";
 
 interface CardProps {
   card: KanbanCard;
@@ -28,13 +22,6 @@ interface CardProps {
   /** Called when the agent badge is clicked. */
   onAgentBadgeClick?: (cardId: string) => void;
 }
-
-const PRIORITY_STRIP: Record<Priority, string> = {
-  low: "bg-p-low",
-  medium: "bg-p-med",
-  high: "bg-p-high",
-  urgent: "bg-p-urgent",
-};
 
 export default function Card(props: CardProps) {
   const card = props.card;
@@ -110,15 +97,15 @@ export default function Card(props: CardProps) {
               )}
             </Show>
           </div>
-          {card.source === "local" && (
-            <div class="flex gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
-              <button
-                type="button"
-                class="text-[0.8rem] font-sans text-ink-secondary hover:text-ink px-1"
-                onClick={() => props.onOpenEdit(card)}
-              >
-                Edit
-              </button>
+          <div class="flex gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
+            <button
+              type="button"
+              class="text-[0.8rem] font-sans text-ink-secondary hover:text-ink px-1"
+              onClick={() => props.onOpenEdit(card)}
+            >
+              Edit
+            </button>
+            <Show when={card.source === "local"}>
               <button
                 type="button"
                 class="text-[0.8rem] font-sans text-ink-secondary hover:text-p-urgent px-1"
@@ -126,19 +113,8 @@ export default function Card(props: CardProps) {
               >
                 Delete
               </button>
-            </div>
-          )}
-          {card.source !== "local" && (
-            <div class="flex gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
-              <button
-                type="button"
-                class="text-[0.8rem] font-sans text-ink-secondary hover:text-ink px-1"
-                onClick={() => props.onOpenEdit(card)}
-              >
-                Edit
-              </button>
-            </div>
-          )}
+            </Show>
+          </div>
         </div>
       </div>
     </article>

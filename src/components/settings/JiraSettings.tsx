@@ -31,9 +31,6 @@ interface JiraProject {
   name: string;
 }
 
-interface JiraSettingsProps extends SourceSettingsProps {}
-
-/** Split a comma-separated status list: trim each entry, drop empties. */
 function splitStatuses(input: string): string[] {
   return input
     .split(",")
@@ -41,7 +38,6 @@ function splitStatuses(input: string): string[] {
     .filter((s) => s.length > 0);
 }
 
-/** Coerce a stored config value to a string; fall back to '' when absent. */
 function configString(config: Record<string, unknown>, key: string): string {
   const v = config[key];
   return typeof v === "string" ? v : "";
@@ -50,7 +46,7 @@ function configString(config: Record<string, unknown>, key: string): string {
 /** Sentinel the backend substitutes for an existing-but-redacted token. */
 const REDACTED_TOKEN = "__REDACTED__";
 
-export default function JiraSettings(props: JiraSettingsProps) {
+export default function JiraSettings(props: SourceSettingsProps) {
   const [baseUrl, setBaseUrl] = createSignal("");
   const [email, setEmail] = createSignal("");
   const [token, setToken] = createSignal("");

@@ -30,6 +30,7 @@ import type {
 } from "../types.ts";
 import { safeListen } from "../event.ts";
 import { COLUMNS } from "../columns.ts";
+import { PRIORITY_STRIP } from "./ui/consts.ts";
 import {
   acpCreateRun,
   acpErrorMessage,
@@ -62,13 +63,6 @@ interface DragEndEvent {
   draggable?: { data?: KanbanCard };
   droppable?: { data?: ColumnId } | null;
 }
-
-const PRIORITY_STRIP: Record<Priority, string> = {
-  low: "bg-p-low",
-  medium: "bg-p-med",
-  high: "bg-p-high",
-  urgent: "bg-p-urgent",
-};
 
 /** Portals the dragged card to document.body so it paints above all columns. */
 function CardDragOverlay(props: { treeSources: () => TreeSource[] }) {
@@ -126,8 +120,7 @@ function CardDragOverlay(props: { treeSources: () => TreeSource[] }) {
 export default function Board() {
   const [cards, setCards] = createSignal<KanbanCard[]>([]);
   const [treeSources, setTreeSources] = createSignal<TreeSource[]>([]);
-  // Per-column loading state. True while a column's first fetch (or a sync
-  // reload) is in flight — drives skeleton placeholders in Column.
+  // True while a column fetch is in flight — drives skeletons.
   const [columnLoading, setColumnLoading] = createSignal<
     Record<ColumnId, boolean>
   >({
@@ -176,6 +169,8 @@ export default function Board() {
   >([]);
   const [startAgentName, setStartAgentName] = createSignal("");
   const [startSkills, setStartSkills] = createSignal<string[]>([]);
+  const [startModel, setStartModel] = createSignal("");
+  const [startEffort, setStartEffort] = createSignal("");
   const [startBusy, setStartBusy] = createSignal(false);
 
   function applyActiveRuns(runs: AgentRun[]) {
@@ -203,7 +198,6 @@ export default function Board() {
     }
   }
 
-  // Initial load + push listener for active-runs changes.
   onMount(() => {
     void loadActiveRuns();
 
@@ -257,6 +251,8 @@ export default function Board() {
       const first = agents.find((a) => a.enabled);
       setStartAgentName(first?.name ?? "");
       setStartSkills(first?.skills ?? []);
+      setStartModel(first?.model ?? "");
+      setStartEffort(first?.effort ?? "");
       if (!first) {
         toaster.warning({
           title: "No agents registered",
@@ -272,14 +268,19 @@ export default function Board() {
     }
   }
 
-  /** Confirm the start dialog: create the run, then open its panel. */
   async function confirmStartAgentRun() {
     const card = startDialogCard();
     const agent = startDialogAgents().find((a) => a.name === startAgentName());
     if (!card || !agent) return;
     setStartBusy(true);
     try {
-      const run = await acpCreateRun(card.id, agent.name, startSkills());
+      const run = await acpCreateRun(
+        card.id,
+        agent.name,
+        startSkills(),
+        startModel().trim() || null,
+        startEffort().trim() || null,
+      );
       setStartDialogOpen(false);
       setActiveRuns((prev) => ({ ...prev, [card.id]: run }));
       setPanelRun(run);
@@ -300,13 +301,7 @@ export default function Board() {
   const menu = useMenu({
     onOpenChange: (details) => {
       if (!details.open) {
-        // Restore focus to the card that owned the menu. The menu is
-        // controlled + has no MenuTrigger, so Ark UI can't restore focus
-        // automatically — without this, Escape sends focus to <body>.
-        // Item-select handlers clear `currentlyMenuingCard` before this
-        // callback runs, so we only refocus on dismiss (Escape / outside
-        // click), not after selecting an item (where focus moves to the
-        // edit modal / etc).
+        // Controlled + no MenuTrigger → Ark can't restore focus; refocus the card.
         const card = currentlyMenuingCard();
         setCurrentlyMenuingCard(null);
         if (card) {
@@ -337,14 +332,9 @@ export default function Board() {
   function openCardMenu(card: KanbanCard, point: { x: number; y: number }) {
     setMenuAnchorPoint(point);
     setCurrentlyMenuingCard(card);
-    // Reposition the menu at the new anchor point. On the first open, the
-    // machine's CONTROLLED.OPEN transition handles positioning. On a
-    // subsequent open (second right-click while menu is already open),
-    // the machine stays in "open" state and doesn't reposition — so we
-    // explicitly call reposition. setTimeout(0) defers past the
-    // machine's own open-transition reposition (which would overwrite
-    // our position) and past any pending CLOSE microtasks from
-    // pointerdown-outside.
+    // On a second open (menu already open) the machine stays in "open"
+    // state and doesn't reposition — call it explicitly. setTimeout(0)
+    // defers past the machine's own reposition + pending CLOSE microtasks.
     setTimeout(() => {
       menu.api().reposition({
         getAnchorRect: () => ({ width: 0, height: 0, ...point }),
@@ -356,13 +346,11 @@ export default function Board() {
    * confirmation toast before switching. If clean (or same card), switch
    * immediately. Called from Card's onEdit and Menu's "Edit" item. */
   function requestEditCard(card: KanbanCard) {
-    // Same card or no card open → switch directly.
     const current = currentlyEditingCard();
     if (!current || current.id === card.id || !isEditingDirty()) {
       setCurrentlyEditingCard(card);
       return;
     }
-    // Dedup: dismiss any existing switch-confirmation toast first.
     const existingId = pendingSwitchToastId();
     if (existingId !== null) toaster.dismiss(existingId);
     setPendingSwitchCard(card);
@@ -430,8 +418,7 @@ export default function Board() {
   });
 
   async function addCard(title: string, column: ColumnId) {
-    // Backend returns the real card (UUID, position, timestamps) — append it
-    // directly. No optimistic guess needed; the call is fast and gives us truth.
+    // Backend gives truth — append it directly.
     try {
       const card = await createLocalCard(title, column);
       setCards((prev) => [...prev, card]);
@@ -443,6 +430,16 @@ export default function Board() {
     }
   }
 
+  /** Re-fetch a column to restore true state after a failed optimistic write. */
+  function revert(column: ColumnId) {
+    void fetchColumn(column, false).catch((err) =>
+      toaster.error({
+        title: "Revert failed",
+        description: acpErrorMessage(err),
+      })
+    );
+  }
+
   async function editCard(
     id: string,
     title: string,
@@ -450,8 +447,7 @@ export default function Board() {
     priority: Priority,
     treeSourceId: string,
   ) {
-    // Optimistic: update the signal immediately so the card reflects the edit
-    // without waiting on the backend round-trip.
+    // Optimistic.
     setCards((prev) =>
       prev.map((c) =>
         c.id === id
@@ -469,16 +465,8 @@ export default function Board() {
     try {
       await updateCard(id, { title, description, priority, treeSourceId });
     } catch (e) {
-      // Revert: re-fetch the card's column to restore true state.
       const card = cards().find((c) => c.id === id);
-      if (card) {
-        void fetchColumn(card.column, false).catch((err) =>
-          toaster.error({
-            title: "Revert failed",
-            description: acpErrorMessage(err),
-          })
-        );
-      }
+      if (card) revert(card.column);
       toaster.error({ title: "Edit failed", description: acpErrorMessage(e) });
     }
   }
@@ -499,20 +487,11 @@ export default function Board() {
 
   async function deleteCard(id: string) {
     const card = cards().find((c) => c.id === id);
-    // Optimistic: remove immediately.
     setCards((prev) => prev.filter((c) => c.id !== id));
     try {
       await deleteCardDb(id);
     } catch (e) {
-      // Revert: re-fetch the card's column to restore it.
-      if (card) {
-        void fetchColumn(card.column, false).catch((err) =>
-          toaster.error({
-            title: "Revert failed",
-            description: acpErrorMessage(err),
-          })
-        );
-      }
+      if (card) revert(card.column);
       toaster.error({
         title: "Delete failed",
         description: acpErrorMessage(e),
@@ -524,8 +503,7 @@ export default function Board() {
     const card = cards().find((c) => c.id === id);
     if (!card || card.column === column) return;
     const oldColumn = card.column;
-    // Optimistic: flip the card to the target column immediately so the drag
-    // feels instant. Position will be corrected by the backend (appends to end).
+    // Optimistic: flip immediately; backend appends to end.
     setCards((prev) =>
       prev.map((
         c,
@@ -537,19 +515,8 @@ export default function Board() {
     try {
       await moveCardDb(id, column);
     } catch (e) {
-      // Revert: re-fetch both affected columns.
-      void fetchColumn(oldColumn, false).catch((err) =>
-        toaster.error({
-          title: "Revert failed",
-          description: acpErrorMessage(err),
-        })
-      );
-      void fetchColumn(column, false).catch((err) =>
-        toaster.error({
-          title: "Revert failed",
-          description: acpErrorMessage(err),
-        })
-      );
+      revert(oldColumn);
+      revert(column);
       toaster.error({ title: "Move failed", description: acpErrorMessage(e) });
     }
   }
@@ -729,6 +696,8 @@ export default function Board() {
                     a.name === name
                   );
                   setStartSkills(agent?.skills ?? []);
+                  setStartModel(agent?.model ?? "");
+                  setStartEffort(agent?.effort ?? "");
                 }}
               >
                 <For each={startDialogAgents()}>
@@ -750,6 +719,40 @@ export default function Board() {
                   onChange={setStartSkills}
                 />
               </Show>
+              <div class="grid grid-cols-2 gap-2">
+                <div>
+                  <label
+                    class="block text-xs font-semibold text-ink-secondary mb-1"
+                    for="start-agent-model"
+                  >
+                    Model (override)
+                  </label>
+                  <input
+                    id="start-agent-model"
+                    type="text"
+                    class="w-full text-sm rounded px-2 py-1.5 bg-base text-ink border border-border-subtle outline-none focus:border-accent"
+                    value={startModel()}
+                    onInput={(e) => setStartModel(e.currentTarget.value)}
+                    placeholder="agent default"
+                  />
+                </div>
+                <div>
+                  <label
+                    class="block text-xs font-semibold text-ink-secondary mb-1"
+                    for="start-agent-effort"
+                  >
+                    Effort (override)
+                  </label>
+                  <input
+                    id="start-agent-effort"
+                    type="text"
+                    class="w-full text-sm rounded px-2 py-1.5 bg-base text-ink border border-border-subtle outline-none focus:border-accent"
+                    value={startEffort()}
+                    onInput={(e) => setStartEffort(e.currentTarget.value)}
+                    placeholder="agent default"
+                  />
+                </div>
+              </div>
               <div class="flex gap-2 justify-end">
                 <button
                   type="button"

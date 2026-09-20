@@ -109,7 +109,6 @@ test("App.handleSync: pauses on conflict, resumes after resolve with captured sy
 
   const { getByTestId, baseElement } = render(() => <App />);
 
-  // Click Sync.
   fireEvent.click(getByTestId("sync-button"));
   // Wait for the merge modal to appear (conflict on s1 pauses the loop).
   await waitFor(() => {
@@ -128,8 +127,6 @@ test("App.handleSync: pauses on conflict, resumes after resolve with captured sy
     throw new Error("resolve should not run before apply-merge");
   }
 
-  // Wait for the lazy-mounted MergeModal content (portaled to body) to
-  // render its apply button, then click it directly.
   await waitFor(() => {
     if (!baseElement.querySelector('[data-testid="apply-merge"]')) {
       throw new Error("apply-merge button not mounted yet");
@@ -157,8 +154,6 @@ test("App.handleSync: pauses on conflict, resumes after resolve with captured sy
       throw new Error("resolve_conflicts should be called once for s1");
     }
   });
-  // finishSync awaits reload() (column fetches) before set_setting — wait
-  // for the setting write rather than reading immediately after sync #2.
   await waitFor(() => {
     const setArgs = calls["set_setting"]?.map((
       a,

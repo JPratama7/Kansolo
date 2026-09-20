@@ -6,6 +6,7 @@ import { Tabs } from "@ark-ui/solid/tabs";
 import type { KanbanCard, Priority, TreeSource } from "../types.ts";
 import { PRIORITIES } from "../types.ts";
 import { ArkSelect } from "./ui/ArkSelect.tsx";
+import { PRIORITY_STRIP } from "./ui/consts.ts";
 import { toaster } from "./ui/toaster.ts";
 
 export interface EditModalResult {
@@ -36,13 +37,6 @@ interface EditModalFormProps {
 const FIELD =
   "w-full text-sm rounded px-2 py-1.5 bg-base text-ink placeholder:text-ink-muted border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent";
 
-const PRIORITY_STRIP: Record<Priority, string> = {
-  low: "bg-p-low",
-  medium: "bg-p-med",
-  high: "bg-p-high",
-  urgent: "bg-p-urgent",
-};
-
 const PRIORITY_PILL: Record<Priority, string> = {
   low: "priority-pill--low",
   medium: "priority-pill--medium",
@@ -50,12 +44,9 @@ const PRIORITY_PILL: Record<Priority, string> = {
   urgent: "priority-pill--urgent",
 };
 
-/**
- * Inner form, mounted fresh per edited card via `<Show keyed>`. Owns the
- * editable field signals so they reset cleanly when the Board-level singleton
- * switches cards. Reports dirty/preview state upward so the Dialog.Root
- * (which lives in the parent) can guard Escape.
- */
+/** Inner form, mounted fresh per card via `<Show keyed>`; owns field signals
+ * so they reset when Board switches cards. Reports dirty/preview state so
+ * the parent Dialog.Root can guard Escape. */
 function EditModalForm(props: EditModalFormProps) {
   const [title, setTitle] = createSignal(props.card.title);
   const [description, setDescription] = createSignal(props.card.description);
@@ -71,7 +62,6 @@ function EditModalForm(props: EditModalFormProps) {
     props.treeSources().find((s) => s.id === props.card.treeSourceId)?.label ??
       props.card.treeSourceId ?? "";
 
-  /** Track whether the user has unsaved edits (to warn on close). */
   const isDirty = () =>
     title() !== props.card.title ||
     description() !== props.card.description ||
@@ -81,12 +71,6 @@ function EditModalForm(props: EditModalFormProps) {
   // Lift dirty/preview state to the wrapper so its close guard can read it.
   createEffect(() => props.onDirtyChange(isDirty()));
   createEffect(() => props.onPreviewChange(preview()));
-
-  // Close request is routed through the wrapper's guarded `onClose` so the
-  // unsaved-changes prompt lives in one place (shared by Escape/backdrop/×).
-  function maybeClose() {
-    props.onClose();
-  }
 
   function submit(e: Event) {
     e.preventDefault();
@@ -259,7 +243,7 @@ function EditModalForm(props: EditModalFormProps) {
           <button
             type="button"
             class="px-3 py-1.5 text-sm font-medium rounded text-ink-secondary hover:bg-elevated transition-colors"
-            onClick={maybeClose}
+            onClick={props.onClose}
           >
             {preview() ? "Close" : "Cancel"}
           </button>
@@ -291,8 +275,7 @@ export default function EditModal(props: EditModalProps) {
 
   // Forward dirty state to Board so it can guard card-switching.
   createEffect(() => props.onDirtyChange?.(isDirty()));
-  // Edge case 2B (dedup): at most one persistent confirmation toast per
-  // modal instance. Holds the active toast id, or null when none is shown.
+  // Dedup: at most one persistent confirmation toast per modal instance.
   const [pendingConfirmToastId, setPendingConfirmToastId] = createSignal<
     string | null
   >(null);
@@ -317,7 +300,6 @@ export default function EditModal(props: EditModalProps) {
     });
   }
 
-  // Re-read the column rect whenever the dialog opens or the edited card changes.
   createEffect(() => {
     if (!props.open || !props.card) return;
     readColumnRect();
@@ -364,7 +346,6 @@ export default function EditModal(props: EditModalProps) {
       setPendingConfirmToastId(null);
       return;
     }
-    // Dirty: show a persistent confirmation toast, don't close yet.
     if (!isPreview() && isDirty()) {
       const id = toaster.create({
         title: "Discard unsaved changes?",
@@ -373,23 +354,17 @@ export default function EditModal(props: EditModalProps) {
         action: {
           label: "Discard",
           onClick: () => {
-            // Action-to-modal routing guard: the edited card may have been
-            // deleted/swapped while the toast was visible. Dismiss silently.
-            if (props.card === null) {
-              toaster.dismiss(id);
-              setPendingConfirmToastId(null);
-              return;
-            }
             toaster.dismiss(id);
             setPendingConfirmToastId(null);
-            props.onOpenChange(false);
+            // Action-to-modal routing guard: the edited card may have been
+            // deleted/swapped while the toast was visible. Dismiss silently.
+            if (props.card !== null) props.onOpenChange(false);
           },
         },
       });
       setPendingConfirmToastId(id);
       return;
     }
-    // Clean: close immediately.
     props.onOpenChange(false);
   }
 

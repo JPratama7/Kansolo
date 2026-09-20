@@ -77,8 +77,6 @@ test("EditModal: dirty close shows confirmation toast, Discard closes modal", as
       throw new Error("EditModal form not mounted yet");
     }
   });
-  // Click the Edit tab trigger directly (getByText is unreliable here
-  // because Ark UI wraps the label in extra spans).
   fireEvent.click(
     baseElement.querySelector('[data-value="edit"]') as HTMLElement,
   );

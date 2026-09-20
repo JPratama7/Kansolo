@@ -13,6 +13,7 @@ export default function AcpSettings() {
   const [skillsDir, setSkillsDir] = createSignal("");
   const [permissionTimeout, setPermissionTimeout] = createSignal(300);
   const [pruneOrphans, setPruneOrphans] = createSignal(false);
+  const [systemPrompt, setSystemPrompt] = createSignal("");
   const [saved, setSaved] = createSignal(false);
   let savedTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -28,6 +29,7 @@ export default function AcpSettings() {
         parseInt(s["acp_permission_timeout"] ?? "300", 10) || 300,
       );
       setPruneOrphans(s["acp_prune_orphans"] === "true");
+      setSystemPrompt(s["acp_system_prompt"] ?? "");
     })();
   });
 
@@ -44,6 +46,7 @@ export default function AcpSettings() {
       await setSetting("acp_permission_timeout", String(permissionTimeout()));
       invalidatePermissionTimeoutCache();
       await setSetting("acp_prune_orphans", pruneOrphans() ? "true" : "false");
+      await setSetting("acp_system_prompt", systemPrompt());
       setSaved(true);
       if (savedTimer) clearTimeout(savedTimer);
       savedTimer = setTimeout(() => setSaved(false), 2000);
@@ -126,6 +129,22 @@ export default function AcpSettings() {
           />
           Prune orphan worktrees on cleanup
         </label>
+        <div>
+          <label
+            class="block text-xs font-semibold text-ink-secondary mb-1"
+            for="acp-system-prompt"
+          >
+            System prompt (default for all agents)
+          </label>
+          <textarea
+            id="acp-system-prompt"
+            rows={4}
+            class={INPUT}
+            value={systemPrompt()}
+            onInput={(e) => setSystemPrompt(e.currentTarget.value)}
+            placeholder="Injected as a prompt-prefix section; per-agent override wins"
+          />
+        </div>
         <div class="flex items-center gap-3">
           <button
             type="button"

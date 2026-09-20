@@ -44,6 +44,7 @@ pub fn usage() {
         "tasker <command> [args]\n\
          commands:\n  \
            run <card_id> [--agent <name>] [--skill <name>]... [--input <text>]\n  \
+             [--model <id>] [--effort <level>]\n  \
            status [card_id]\n  \
            cancel <card_id>\n  \
            list\n  \
@@ -172,33 +173,30 @@ fn last_flag<'a>(
     flags.get(key).and_then(|v| v.last()).map(|s| s.as_str())
 }
 
-/// `run <card_id> [--agent <name>] [--skill <name>]... [--input <text>]`
+/// `run <card_id> [--agent <name>] [--skill <name>]... [--input <text>]
+///  [--model <id>] [--effort <level>]`
 async fn cmd_run(args: &[String]) -> Result<i32, AcpError> {
     let parsed = parse_args(args, &[])?;
     let card_id = parsed
         .positional
         .first()
         .ok_or_else(|| {
-            AcpError::validation("usage: run <card_id> [--agent ...] [--skill ...] [--input ...]")
+            AcpError::validation(
+                "usage: run <card_id> [--agent ...] [--skill ...] [--input ...] [--model ...] [--effort ...]",
+            )
         })?
         .clone();
 
-    let (run_id, repo_path, prompt, skill_names, acp_agent) = {
+    let (run_id, repo_path, prompt, skill_names, acp_agent, model, effort) = {
         let conn = open_and_init()?;
         // Resolve agent: --agent flag > acp_default_agent setting > error.
         let agent_name = match last_flag(&parsed.flags, "agent") {
             Some(n) => n.to_string(),
-            None => conn
-                .query_row(
-                    "SELECT value FROM settings WHERE key = 'acp_default_agent'",
-                    [],
-                    |r| r.get::<_, String>(0),
+            None => db::read_setting(&conn, "acp_default_agent").ok_or_else(|| {
+                AcpError::validation(
+                    "no agent specified; pass --agent <name> or set acp_default_agent",
                 )
-                .map_err(|_| {
-                    AcpError::validation(
-                        "no agent specified; pass --agent <name> or set acp_default_agent",
-                    )
-                })?,
+            })?,
         };
 
         let agent = agents::get_agent(&conn, &agent_name)?
@@ -208,6 +206,13 @@ async fn cmd_run(args: &[String]) -> Result<i32, AcpError> {
                 "Agent '{agent_name}' is disabled"
             )));
         }
+        // --model/--effort flags > agent defaults.
+        let model = last_flag(&parsed.flags, "model")
+            .map(|s| s.to_string())
+            .or_else(|| agent.model.clone());
+        let effort = last_flag(&parsed.flags, "effort")
+            .map(|s| s.to_string())
+            .or_else(|| agent.effort.clone());
 
         if agent_runs::is_card_locked(&conn, &card_id) {
             return Err(AcpError::locked(format!(
@@ -239,7 +244,7 @@ async fn cmd_run(args: &[String]) -> Result<i32, AcpError> {
         let loaded = skills::load_skills(&sn);
         let skills_section = runner::build_skills_section(&loaded);
 
-        // Build prompt: skills section + card title/description + optional --input.
+        // Build prompt: system > skills > card title/description + optional --input.
         let mut card_body = if card.description.is_empty() {
             card.title.clone()
         } else {
@@ -249,11 +254,15 @@ async fn cmd_run(args: &[String]) -> Result<i32, AcpError> {
             card_body.push_str("\n\n---\n\n");
             card_body.push_str(extra);
         }
-        let prompt = if skills_section.is_empty() {
-            card_body
-        } else {
-            format!("{}\n\n---\n\n{}", skills_section, card_body)
-        };
+        let system = runner::resolve_system_prompt(&conn, &agent);
+        let prompt = runner::build_prompt(
+            &runner::PromptParts {
+                system,
+                skills: skills_section,
+                card_body,
+            },
+            None,
+        );
 
         let run_id = uuid::Uuid::new_v4().to_string();
         agent_runs::insert_run(
@@ -266,7 +275,7 @@ async fn cmd_run(args: &[String]) -> Result<i32, AcpError> {
             "pending",
             &sn,
         )?;
-        (run_id, repo_path, prompt, sn, acp_agent)
+        (run_id, repo_path, prompt, sn, acp_agent, model, effort)
     };
 
     // Create worktree + spawn SDK session (async). Stream updates to stdout.
@@ -277,6 +286,8 @@ async fn cmd_run(args: &[String]) -> Result<i32, AcpError> {
         &prompt,
         skill_names,
         acp_agent,
+        model,
+        effort,
     )
     .await?;
     Ok(exit_code)
@@ -292,6 +303,8 @@ async fn spawn_and_stream(
     prompt: &str,
     _skill_names: Vec<String>,
     acp_agent: agent_client_protocol::AcpAgent,
+    model: Option<String>,
+    effort: Option<String>,
 ) -> Result<i32, AcpError> {
     let wt_mgr = WorktreeManager::new(&PathBuf::from(repo_path));
     let worktree = wt_mgr.create(card_id).await?;
@@ -310,106 +323,22 @@ async fn spawn_and_stream(
     }
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RunUpdate>();
-    let cwd = worktree.path.clone();
-    let prompt = prompt.to_string();
 
-    let join = tokio::spawn(async move {
-        let tx_for_err = tx.clone();
-        let result = agent_client_protocol::Client
-            .connect_with(acp_agent, move |cx: agent_client_protocol::ConnectionTo<agent_client_protocol::Agent>| {
-                let tx = tx.clone();
-                let cwd = cwd.clone();
-                let prompt = prompt.clone();
-                async move {
-                    let mut session = cx.build_session(&cwd).block_task().start_session().await?;
-                    let _ = tx.send(RunUpdate::SessionId {
-                        session_id: session.session_id().0.to_string(),
-                    });
-                    session.send_prompt(&prompt)?;
-                    loop {
-                        match session.read_update().await {
-                            Ok(msg) => {
-                                use agent_client_protocol::SessionMessage;
-                                match msg {
-                                    SessionMessage::SessionMessage(dispatch) => {
-                                        // CLI has no interactive UI, so auto-respond
-                                        // to permission requests with the allow option.
-                                        // Without this the agent hangs forever waiting
-                                        // for a response that never comes.
-                                        let method = dispatch.method().to_string();
-                                        if method == "session/request_permission" {
-                                            use agent_client_protocol::schema::v1::RequestPermissionRequest;
-                                            match dispatch.into_request::<RequestPermissionRequest>() {
-                                                Ok(Ok((req, responder))) => {
-                                                    let option_id = runner::pick_allow_option(&req.options);
-                                                    let description = runner::summarize_tool_call(&req.tool_call);
-                                                    let _ = tx.send(RunUpdate::PermissionRequest {
-                                                        request_id: req.tool_call.tool_call_id.0.to_string(),
-                                                        description,
-                                                    });
-                                                    use agent_client_protocol::schema::v1::{
-                                                        RequestPermissionResponse,
-                                                        RequestPermissionOutcome,
-                                                        SelectedPermissionOutcome,
-                                                    };
-                                                    let _ = responder.respond(
-                                                        RequestPermissionResponse::new(
-                                                            RequestPermissionOutcome::Selected(
-                                                                SelectedPermissionOutcome::new(option_id),
-                                                            ),
-                                                        ),
-                                                    );
-                                                }
-                                                Ok(Err(_)) | Err(_) => {
-                                                    let _ = tx.send(RunUpdate::SessionUpdate {
-                                                        text: "permission request: failed to parse".to_string(),
-                                                    });
-                                                }
-                                            }
-                                        } else if method == "session/update" {
-                                            use agent_client_protocol::schema::v1::SessionNotification;
-                                            match dispatch.into_notification::<SessionNotification>() {
-                                                Ok(Ok(notif)) => {
-                                                    if let Some(text) = runner::format_session_update(&notif.update) {
-                                                        let _ = tx.send(RunUpdate::SessionUpdate { text });
-                                                    }
-                                                }
-                                                Ok(Err(_)) | Err(_) => {}
-                                            }
-                                        } else {
-                                            let _ = tx.send(RunUpdate::SessionUpdate {
-                                                text: format!("(unhandled: {method})"),
-                                            });
-                                        }
-                                    }
-                                    SessionMessage::StopReason(reason) => {
-                                        let _ = tx.send(RunUpdate::Completed {
-                                            output: String::new(),
-                                            stop_reason: format!("{:?}", reason),
-                                        });
-                                        break;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            Err(e) => {
-                                let _ = tx.send(RunUpdate::Failed {
-                                    error: e.to_string(),
-                                });
-                                break;
-                            }
-                        }
-                    }
-                    Ok(())
-                }
-            })
-            .await;
-        if let Err(e) = result {
-            let _ = tx_for_err.send(RunUpdate::Failed {
-                error: e.to_string(),
-            });
-        }
-    });
+    let job = crate::session::SessionJob {
+        cwd: worktree.path.clone(),
+        prompt: prompt.to_string(),
+        model,
+        effort,
+        tx: tx.clone(),
+        prompt_rx: None,
+        cancel: None,
+        complete: None,
+        permissions: None,
+        db_path: None,
+        run_id: run_id.to_string(),
+        on_session: None,
+    };
+    let join = tokio::spawn(crate::session::run_session_job(acp_agent, job));
 
     // Drain updates to stdout + track terminal state.
     let mut exit_code = 1;
@@ -417,6 +346,9 @@ async fn spawn_and_stream(
         match update {
             RunUpdate::SessionId { session_id } => {
                 println!("session: {session_id}");
+            }
+            RunUpdate::RestoringContext => {
+                eprintln!("[restoring context]");
             }
             RunUpdate::SessionUpdate { text } => {
                 println!("{text}");
@@ -583,15 +515,7 @@ fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         return s.to_string();
     }
-    // Slice on a char boundary: take n-1 chars, then append an ellipsis.
-    // `&s[..n]` would panic on multi-byte UTF-8 if n landed mid-codepoint.
-    let cut = s
-        .char_indices()
-        .take(n.saturating_sub(1))
-        .last()
-        .map(|(i, _)| &s[..i])
-        .unwrap_or(s);
-    format!("{cut}…")
+    format!("{}…", runner::truncate_chars(s, n.saturating_sub(1)))
 }
 
 /// `merge <card_id> [--yes] [--prune]` — print diff summary, prompt [y/N]
@@ -795,7 +719,7 @@ fn cmd_agents_edit(args: &[String]) -> Result<i32, AcpError> {
         .get("skill")
         .cloned()
         .unwrap_or(existing.skills);
-    agents::update_agent(&conn, &name, &command, &desc, &skills)?;
+    agents::update_agent(&conn, &name, &command, &desc, &skills, None, None, "")?;
     println!("updated agent {name}");
     Ok(0)
 }

@@ -29,16 +29,6 @@ export function setTheme(theme: Theme) {
   apply(theme);
 }
 
-const nextTheme: Record<Theme, Theme> = {
-  light: "dark",
-  dark: "system",
-  system: "light",
-};
-
-export function cycleTheme() {
-  setTheme(nextTheme[theme()]);
-}
-
 export async function initTheme() {
   try {
     const saved = (await getSetting(THEME_KEY) ?? "system") as Theme;

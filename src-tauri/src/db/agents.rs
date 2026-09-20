@@ -12,6 +12,9 @@ pub struct AgentRow {
     pub enabled: bool,
     pub skills_json: String,
     pub created_at: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub system_prompt: String,
 }
 
 /// API-facing agent representation.
@@ -25,6 +28,9 @@ pub struct Agent {
     pub enabled: bool,
     pub skills: Vec<String>,
     pub created_at: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub system_prompt: String,
 }
 
 impl From<AgentRow> for Agent {
@@ -38,6 +44,9 @@ impl From<AgentRow> for Agent {
             enabled: r.enabled,
             skills,
             created_at: r.created_at,
+            model: r.model,
+            effort: r.effort,
+            system_prompt: r.system_prompt,
         }
     }
 }
@@ -70,26 +79,33 @@ pub fn insert_agent(
     Ok(())
 }
 
+/// Column list shared by get_agent / list_agents.
+const AGENT_COLS: &str =
+    "name, command, description, built_in, enabled, skills_json, created_at, model, effort, system_prompt";
+
+fn row_to_agent(r: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRow> {
+    Ok(AgentRow {
+        name: r.get(0)?,
+        command: r.get(1)?,
+        description: r.get(2)?,
+        built_in: r.get::<_, i64>(3)? != 0,
+        enabled: r.get::<_, i64>(4)? != 0,
+        skills_json: r.get(5)?,
+        created_at: r.get(6)?,
+        model: r.get(7)?,
+        effort: r.get(8)?,
+        system_prompt: r.get(9)?,
+    })
+}
+
 /// Get a single agent by name.
 pub fn get_agent(conn: &Connection, name: &str) -> Result<Option<Agent>, AcpError> {
-    let row = conn.query_row(
-        "SELECT name, command, description, built_in, enabled, skills_json, created_at
-         FROM agents WHERE name = ?1",
-        params![name],
-        |r| {
-            Ok(AgentRow {
-                name: r.get(0)?,
-                command: r.get(1)?,
-                description: r.get(2)?,
-                built_in: r.get::<_, i64>(3)? != 0,
-                enabled: r.get::<_, i64>(4)? != 0,
-                skills_json: r.get(5)?,
-                created_at: r.get(6)?,
-            })
-        },
-    );
+    let sql = format!("SELECT {AGENT_COLS} FROM agents WHERE name = ?1");
+    let row = conn.query_row(&sql, params![name], |r| {
+        Ok(Agent::from(row_to_agent(r)?))
+    });
     match row {
-        Ok(r) => Ok(Some(Agent::from(r))),
+        Ok(a) => Ok(Some(a)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
         Err(e) => Err(AcpError::internal(e.to_string())),
     }
@@ -97,40 +113,34 @@ pub fn get_agent(conn: &Connection, name: &str) -> Result<Option<Agent>, AcpErro
 
 /// List all agents ordered by name.
 pub fn list_agents(conn: &Connection) -> Result<Vec<Agent>, AcpError> {
-    let mut stmt = conn
-        .prepare("SELECT name, command, description, built_in, enabled, skills_json, created_at FROM agents ORDER BY name ASC")
-        .map_err(AcpError::internal)?;
+    let sql = format!("SELECT {AGENT_COLS} FROM agents ORDER BY name ASC");
+    let mut stmt = conn.prepare(&sql).map_err(AcpError::internal)?;
     let rows = stmt
-        .query_map([], |r| {
-            Ok(AgentRow {
-                name: r.get(0)?,
-                command: r.get(1)?,
-                description: r.get(2)?,
-                built_in: r.get::<_, i64>(3)? != 0,
-                enabled: r.get::<_, i64>(4)? != 0,
-                skills_json: r.get(5)?,
-                created_at: r.get(6)?,
-            })
-        })
+        .query_map([], |r| Ok(Agent::from(row_to_agent(r)?)))
         .map_err(AcpError::internal)?;
     let mut agents = Vec::new();
     for r in rows {
-        agents.push(Agent::from(r.map_err(AcpError::internal)?));
+        agents.push(r.map_err(AcpError::internal)?);
     }
     Ok(agents)
 }
 
-/// Update an agent's command, description, and skills.
+/// Update an agent's command, description, skills, model, effort, and
+/// system prompt.
 pub fn update_agent(
     conn: &Connection,
     name: &str,
     command: &str,
     description: &str,
     skills: &[String],
+    model: Option<&str>,
+    effort: Option<&str>,
+    system_prompt: &str,
 ) -> Result<(), AcpError> {
     conn.execute(
-        "UPDATE agents SET command = ?1, description = ?2, skills_json = ?3 WHERE name = ?4",
-        params![command, description, serialize_skills(skills), name],
+        "UPDATE agents SET command = ?1, description = ?2, skills_json = ?3, model = ?4, effort = ?5, system_prompt = ?6
+         WHERE name = ?7",
+        params![command, description, serialize_skills(skills), model, effort, system_prompt, name],
     )
     .map_err(AcpError::internal)?;
     Ok(())
@@ -212,11 +222,38 @@ mod tests {
             "echo bye",
             "Updated",
             &["tdd".to_string()],
+            None,
+            None,
+            "",
         )
         .unwrap();
         let agent = get_agent(&conn, "my-agent").unwrap().unwrap();
         assert_eq!(agent.skills, vec!["tdd"]);
         assert_eq!(agent.command, "echo bye");
+    }
+
+    #[test]
+    fn agent_model_effort_round_trip() {
+        let conn = test_db();
+        insert_agent(&conn, "my-agent", "echo hi", "Test", false, true, &[]).unwrap();
+        update_agent(
+            &conn,
+            "my-agent",
+            "echo hi",
+            "Test",
+            &[],
+            Some("claude-opus-4-5"),
+            Some("high"),
+            "",
+        )
+        .unwrap();
+        let agent = get_agent(&conn, "my-agent").unwrap().unwrap();
+        assert_eq!(agent.model.as_deref(), Some("claude-opus-4-5"));
+        assert_eq!(agent.effort.as_deref(), Some("high"));
+        update_agent(&conn, "my-agent", "echo hi", "Test", &[], None, None, "").unwrap();
+        let agent = get_agent(&conn, "my-agent").unwrap().unwrap();
+        assert_eq!(agent.model, None);
+        assert_eq!(agent.effort, None);
     }
 
     #[test]
