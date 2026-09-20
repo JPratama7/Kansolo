@@ -98,6 +98,12 @@ export interface Agent {
   enabled: boolean;
   skills: string[];
   createdAt: string;
+  /** Default ACP model config option (e.g. "opus"); null = agent default. */
+  model: string | null;
+  /** Default ACP effort config option (e.g. "high"); null = agent default. */
+  effort: string | null;
+  /** Per-agent system prompt override; empty = use the global setting. */
+  systemPrompt: string;
 }
 
 /** Agent run against a card, tracked in the `agent_runs` table. */
@@ -139,7 +145,8 @@ export type RunUpdate =
     timeoutMs?: number;
   }
   | { type: "permissionTimeout" }
-  | { type: "waitingForInput"; stopReason: string };
+  | { type: "waitingForInput"; stopReason: string }
+  | { type: "restoringContext" };
 
 /** Tauri event payload for a single run update. */
 export interface AcpUpdateEvent {
@@ -150,6 +157,16 @@ export interface AcpUpdateEvent {
 /** Tauri event payload when the active runs set changes. */
 export interface AcpActiveRunsChangedEvent {
   runs: AgentRun[];
+}
+
+/** Live process info for a run's agent subprocess. */
+export interface RunProcessInfo {
+  runId: string;
+  status: string;
+  /** Agent subprocess pid; null = not found. */
+  pid: number | null;
+  /** Seconds since the run row was created. */
+  elapsedSecs: number;
 }
 
 /** Diff between agent branch and main. */

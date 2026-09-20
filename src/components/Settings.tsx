@@ -39,6 +39,8 @@ import {
 import AgentRegistry from "./settings/AgentRegistry.tsx";
 import AcpSettings from "./settings/AcpSettings.tsx";
 import { ArkSelect } from "./ui/ArkSelect.tsx";
+import { INPUT } from "./ui/consts.ts";
+import { panelResize } from "./ui/panelResize.ts";
 import { toaster } from "./ui/toaster.ts";
 import { currentTheme, setTheme, type Theme } from "../theme.ts";
 
@@ -99,10 +101,7 @@ export default function Settings(props: SettingsProps) {
   >(null);
 
   const [activeSection, setActiveSection] = createSignal<SectionId>("sources");
-  const [panelW, setPanelW] = createSignal(0);
-  const [panelH, setPanelH] = createSignal(0);
-  let panelEl: HTMLDivElement | undefined;
-  let resizeState: { x: number; y: number; w: number; h: number } | null = null;
+  const resize = panelResize("settings_w", "settings_h", 640, 560, 440, 340);
 
   // Paired instance + component — both guaranteed non-null when truthy.
   // Avoids signal timing issues where editing() and EditComponent() could
@@ -152,48 +151,6 @@ export default function Settings(props: SettingsProps) {
 
   function requestClose() {
     props.onOpenChange(false);
-  }
-
-  function onResizeStart(e: PointerEvent) {
-    e.preventDefault();
-    e.stopPropagation();
-    const el = panelEl;
-    resizeState = {
-      x: e.clientX,
-      y: e.clientY,
-      w: el?.offsetWidth ?? 640,
-      h: el?.offsetHeight ?? 560,
-    };
-    window.addEventListener("pointermove", onResizeMove);
-    window.addEventListener("pointerup", onResizeEnd);
-  }
-  function onResizeMove(e: PointerEvent) {
-    if (!resizeState) return;
-    const maxW = window.innerWidth * 0.9;
-    const maxH = window.innerHeight * 0.9;
-    const w = Math.min(
-      Math.max(resizeState.w + (e.clientX - resizeState.x), 440),
-      maxW,
-    );
-    const h = Math.min(
-      Math.max(resizeState.h + (e.clientY - resizeState.y), 340),
-      maxH,
-    );
-    setPanelW(w);
-    setPanelH(h);
-  }
-  async function onResizeEnd() {
-    window.removeEventListener("pointermove", onResizeMove);
-    window.removeEventListener("pointerup", onResizeEnd);
-    const w = panelW();
-    const h = panelH();
-    resizeState = null;
-    if (w > 0 && h > 0) {
-      try {
-        await setSetting("settings_w", String(Math.round(w)));
-        await setSetting("settings_h", String(Math.round(h)));
-      } catch { /* non-fatal: size just won't persist */ }
-    }
   }
 
   function startEdit(src: SourceInstance) {
@@ -373,9 +330,6 @@ export default function Settings(props: SettingsProps) {
     }
   }
 
-  const INPUT =
-    "w-full text-sm rounded px-2 py-1.5 bg-base text-ink placeholder:text-ink-secondary border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent";
-
   return (
     <Dialog.Root
       open={props.open}
@@ -390,12 +344,12 @@ export default function Settings(props: SettingsProps) {
         <Dialog.Backdrop class="fixed inset-0 z-50 bg-black/50" />
         <Dialog.Positioner class="fixed inset-0 z-50 flex items-start justify-center pt-10 px-4">
           <Dialog.Content
-            ref={panelEl}
+            ref={resize.ref}
             class="settings-panel relative flex flex-col w-[640px] h-[560px] max-w-[90vw] max-h-[90vh] bg-surface rounded-[var(--radius-card)] border border-border-subtle shadow-2xl overflow-hidden"
             aria-label="Settings"
             style={{
-              width: panelW() ? `${panelW()}px` : undefined,
-              height: panelH() ? `${panelH()}px` : undefined,
+              width: resize.panelW() ? `${resize.panelW()}px` : undefined,
+              height: resize.panelH() ? `${resize.panelH()}px` : undefined,
             }}
           >
             <div class="flex items-center justify-between px-4 py-3 bg-surface border-b border-border-subtle">
@@ -816,7 +770,7 @@ export default function Settings(props: SettingsProps) {
                                             type="text"
                                             name="tree_label"
                                             autocomplete="off"
-                                            class="w-full text-sm rounded px-2 py-1 bg-base text-ink placeholder:text-ink-muted border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
+                                            class={INPUT}
                                             value={editTreeLabel()}
                                             onInput={(e) =>
                                               setEditTreeLabel(
@@ -835,7 +789,7 @@ export default function Settings(props: SettingsProps) {
                                             type="text"
                                             name="tree_path"
                                             autocomplete="off"
-                                            class="w-full text-sm rounded px-2 py-1 bg-base text-ink placeholder:text-ink-muted border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
+                                            class={INPUT}
                                             value={editTreePath()}
                                             onInput={(e) =>
                                               setEditTreePath(
@@ -854,7 +808,7 @@ export default function Settings(props: SettingsProps) {
                                             type="text"
                                             name="tree_editor"
                                             autocomplete="off"
-                                            class="w-full text-sm rounded px-2 py-1 bg-base text-ink placeholder:text-ink-muted border border-border-subtle outline-none focus:border-accent focus:ring-1 focus:ring-accent"
+                                            class={INPUT}
                                             value={editTreeEditor()}
                                             onInput={(e) =>
                                               setEditTreeEditor(
@@ -977,25 +931,7 @@ export default function Settings(props: SettingsProps) {
 
             <div
               class="settings-grip"
-              onPointerDown={onResizeStart}
-              onKeyDown={(e) => {
-                const step = e.shiftKey ? 20 : 5;
-                if (e.key === "ArrowRight" || e.key === "ArrowDown") {
-                  e.preventDefault();
-                  setPanelW((w) => Math.min(w + step, window.innerWidth * 0.9));
-                  setPanelH((h) =>
-                    Math.min(h + step, window.innerHeight * 0.9)
-                  );
-                } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
-                  e.preventDefault();
-                  setPanelW((w) => Math.max(w - step, 440));
-                  setPanelH((h) => Math.max(h - step, 340));
-                }
-              }}
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize settings"
-              tabindex={0}
+              {...resize.gripProps("Resize settings")}
             />
           </Dialog.Content>
         </Dialog.Positioner>

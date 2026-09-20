@@ -27,6 +27,9 @@ export default function AgentRegistry() {
   const [name, setName] = createSignal("");
   const [command, setCommand] = createSignal("");
   const [description, setDescription] = createSignal("");
+  const [model, setModel] = createSignal("");
+  const [effort, setEffort] = createSignal("");
+  const [systemPrompt, setSystemPrompt] = createSignal("");
   const [selectedSkills, setSelectedSkills] = createSignal<string[]>([]);
   const [adding, setAdding] = createSignal(false);
 
@@ -62,6 +65,9 @@ export default function AgentRegistry() {
     setName("");
     setCommand("");
     setDescription("");
+    setModel("");
+    setEffort("");
+    setSystemPrompt("");
     setSelectedSkills([]);
   }
 
@@ -71,6 +77,9 @@ export default function AgentRegistry() {
     setName(agent.name);
     setCommand(agent.command);
     setDescription(agent.description);
+    setModel(agent.model ?? "");
+    setEffort(agent.effort ?? "");
+    setSystemPrompt(agent.systemPrompt ?? "");
     setSelectedSkills(agent.skills);
   }
 
@@ -93,11 +102,14 @@ export default function AgentRegistry() {
       return;
     }
     try {
+      const m = model().trim() || null;
+      const ef = effort().trim() || null;
+      const sp = systemPrompt();
       if (editing()) {
-        await acpUpdateAgent(n, cmd, desc, selectedSkills());
+        await acpUpdateAgent(n, cmd, desc, selectedSkills(), m, ef, sp);
         toaster.success({ title: "Agent updated", description: n });
       } else {
-        await acpRegisterAgent(n, cmd, desc, selectedSkills());
+        await acpRegisterAgent(n, cmd, desc, selectedSkills(), m, ef, sp);
         toaster.success({ title: "Agent registered", description: n });
       }
       cancelForm();
@@ -276,6 +288,56 @@ export default function AgentRegistry() {
                 onInput={(e) => setDescription(e.currentTarget.value)}
                 placeholder="What this agent does"
               />
+            </div>
+            <div>
+              <label
+                class="block text-xs font-semibold text-ink-secondary mb-1"
+                for="agent-system-prompt"
+              >
+                System prompt (empty = global default)
+              </label>
+              <textarea
+                id="agent-system-prompt"
+                rows={3}
+                class={INPUT}
+                value={systemPrompt()}
+                onInput={(e) => setSystemPrompt(e.currentTarget.value)}
+                placeholder="Injected as a prompt-prefix section for this agent"
+              />
+            </div>
+            <div class="grid grid-cols-2 gap-2">
+              <div>
+                <label
+                  class="block text-xs font-semibold text-ink-secondary mb-1"
+                  for="agent-model"
+                >
+                  Model (default)
+                </label>
+                <input
+                  id="agent-model"
+                  type="text"
+                  class={INPUT}
+                  value={model()}
+                  onInput={(e) => setModel(e.currentTarget.value)}
+                  placeholder="e.g. opus"
+                />
+              </div>
+              <div>
+                <label
+                  class="block text-xs font-semibold text-ink-secondary mb-1"
+                  for="agent-effort"
+                >
+                  Effort (default)
+                </label>
+                <input
+                  id="agent-effort"
+                  type="text"
+                  class={INPUT}
+                  value={effort()}
+                  onInput={(e) => setEffort(e.currentTarget.value)}
+                  placeholder="e.g. high"
+                />
+              </div>
             </div>
             {/* Skill multi-select */}
             <Show when={skills().length > 0}>
