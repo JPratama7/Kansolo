@@ -33,13 +33,12 @@ const MCP_TOKEN_KEY: &str = "mcp_token";
 /// Returns `None` when the row is absent or empty.
 fn read_mcp_token(db_path: &PathBuf) -> Option<String> {
     let conn = open_db_path(db_path).ok()?;
-    conn.query_row(
-        "SELECT value FROM settings WHERE key = ?1",
-        params![MCP_TOKEN_KEY],
-        |r| r.get::<_, String>(0),
-    )
-    .ok()
-    .filter(|t| !t.is_empty())
+    crate::db::read_setting(&conn, MCP_TOKEN_KEY).filter(|t| !t.is_empty())
+}
+
+/// One-line `McpError::internal_error` with the `{error}` payload shape.
+fn mcp_internal(code: &'static str, e: impl std::fmt::Display) -> McpError {
+    McpError::internal_error(code, Some(serde_json::json!({ "error": e.to_string() })))
 }
 
 /// Load the persisted MCP bearer token, or generate + persist a fresh one.
@@ -154,45 +153,22 @@ impl KansoloMcp {
 
     #[tool(description = "List all kanban cards, ordered by column then position.")]
     async fn list_cards(&self) -> Result<CallToolResult, McpError> {
-        let conn = open_db_path(&self.db_path).map_err(|e| {
-            McpError::internal_error("db_open_failed", Some(serde_json::json!({ "error": e })))
-        })?;
+        let conn = open_db_path(&self.db_path).map_err(|e| mcp_internal("db_open_failed", e))?;
         let mut stmt = conn
             .prepare(&format!(
                 r#"SELECT {CARD_COLUMNS} FROM cards
                    ORDER BY "column", position ASC"#
             ))
-            .map_err(|e| {
-                McpError::internal_error(
-                    "db_prepare_failed",
-                    Some(serde_json::json!({ "error": e.to_string() })),
-                )
-            })?;
-        let rows = stmt.query_map([], row_to_card).map_err(|e| {
-            McpError::internal_error(
-                "db_query_failed",
-                Some(serde_json::json!({ "error": e.to_string() })),
-            )
-        })?;
-        let cards: Vec<Card> = {
-            let mut out = Vec::new();
-            for r in rows {
-                out.push(r.map_err(|e| {
-                    McpError::internal_error(
-                        "db_row_failed",
-                        Some(serde_json::json!({ "error": e.to_string() })),
-                    )
-                })?);
-            }
-            out
-        };
+            .map_err(|e| mcp_internal("db_prepare_failed", e))?;
+        let rows = stmt
+            .query_map([], row_to_card)
+            .map_err(|e| mcp_internal("db_query_failed", e))?;
+        let cards: Vec<Card> = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| mcp_internal("db_row_failed", e))?;
         Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&cards).map_err(|e| {
-                McpError::internal_error(
-                    "serialize_failed",
-                    Some(serde_json::json!({ "error": e.to_string() })),
-                )
-            })?,
+            serde_json::to_string_pretty(&cards)
+                .map_err(|e| mcp_internal("serialize_failed", e))?,
         )]))
     }
 
@@ -201,34 +177,23 @@ impl KansoloMcp {
         &self,
         Parameters(GetCardParams { id }): Parameters<GetCardParams>,
     ) -> Result<CallToolResult, McpError> {
-        let conn = open_db_path(&self.db_path).map_err(|e| {
-            McpError::internal_error("db_open_failed", Some(serde_json::json!({ "error": e })))
-        })?;
+        let conn = open_db_path(&self.db_path).map_err(|e| mcp_internal("db_open_failed", e))?;
         let row = conn.query_row(
             &format!(r#"SELECT {CARD_COLUMNS} FROM cards WHERE id = ?1"#),
             [&id],
             row_to_card,
         );
         match row {
-            Ok(card) => {
-                Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&card).map_err(|e| {
-                        McpError::internal_error(
-                            "serialize_failed",
-                            Some(serde_json::json!({ "error": e.to_string() })),
-                        )
-                    })?,
-                )]))
-            }
+            Ok(card) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string_pretty(&card)
+                    .map_err(|e| mcp_internal("serialize_failed", e))?,
+            )])),
             Err(rusqlite::Error::QueryReturnedNoRows) => {
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "No card with id {id}."
                 ))]))
             }
-            Err(e) => Err(McpError::internal_error(
-                "db_query_failed",
-                Some(serde_json::json!({ "error": e.to_string() })),
-            )),
+            Err(e) => Err(mcp_internal("db_query_failed", e)),
         }
     }
 
@@ -247,21 +212,14 @@ impl KansoloMcp {
                 None,
             ));
         }
-        let conn = open_db_path(&self.db_path).map_err(|e| {
-            McpError::internal_error("db_open_failed", Some(serde_json::json!({ "error": e })))
-        })?;
+        let conn = open_db_path(&self.db_path).map_err(|e| mcp_internal("db_open_failed", e))?;
         let now = now_iso();
         let updated = conn
             .execute(
                 r#"UPDATE cards SET "column" = ?1, position = ?2, updated_at = ?3 WHERE id = ?4"#,
                 rusqlite::params![&column, position, &now, &id],
             )
-            .map_err(|e| {
-                McpError::internal_error(
-                    "db_update_failed",
-                    Some(serde_json::json!({ "error": e.to_string() })),
-                )
-            })?;
+            .map_err(|e| mcp_internal("db_update_failed", e))?;
         if updated == 0 {
             Ok(CallToolResult::success(vec![Content::text(format!(
                 "No card with id {id}."
@@ -412,19 +370,11 @@ pub async fn status<R: Runtime>(app: &AppHandle<R>, state: &State<'_, McpState>)
     let has_token = db_path_for(app)
         .map(|p| read_mcp_token(&p).is_some())
         .unwrap_or(false);
-    if guard.is_some() {
-        // Port is not tracked separately here; the caller knows the configured port.
-        McpStatus {
-            running: true,
-            port: None,
-            has_token,
-        }
-    } else {
-        McpStatus {
-            running: false,
-            port: None,
-            has_token,
-        }
+    // Port is not tracked separately here; the caller knows the configured port.
+    McpStatus {
+        running: guard.is_some(),
+        port: None,
+        has_token,
     }
 }
 
