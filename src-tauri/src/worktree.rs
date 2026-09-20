@@ -2,14 +2,12 @@ use crate::error::AcpError;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// Created worktree: path on disk + branch name + the repo's default
-/// branch (resolved at creation, used for diff/merge targets).
+/// Created worktree: path on disk + branch name.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Worktree {
     pub path: PathBuf,
     pub branch: String,
-    pub default_branch: String,
 }
 
 /// Merge result for folding an agent branch back into main.
@@ -167,11 +165,9 @@ impl WorktreeManager {
                 String::from_utf8_lossy(&output.stderr)
             )));
         }
-        let default_branch = self.resolve_default_branch().await;
         Ok(Worktree {
             path: wt_path,
             branch,
-            default_branch,
         })
     }
 
@@ -470,11 +466,9 @@ mod tests {
         let dir = temp_git_repo();
         let mgr = WorktreeManager::new(dir.path());
         let _wt = mgr.create("crash1").await.unwrap();
-        // Don't remove — simulate crashed run.
         let result = mgr.create("crash1").await;
         assert!(result.is_err());
         mgr.remove("crash1").await.unwrap();
-        // Now create should succeed.
         mgr.create("crash1").await.unwrap();
         mgr.remove("crash1").await.unwrap();
     }
@@ -597,10 +591,6 @@ mod tests {
         let dir = temp_git_repo_with_branch("master");
         let mgr = WorktreeManager::new(dir.path());
         let wt = mgr.create("mastercard").await.unwrap();
-        assert_eq!(
-            wt.default_branch, "master",
-            "default branch should be master"
-        );
         // Commit a change on the agent branch.
         fs::write(wt.path.join("feature.txt"), "new feature\n").unwrap();
         Command::new("git")

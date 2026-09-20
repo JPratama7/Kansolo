@@ -2,9 +2,11 @@ pub mod cli;
 pub mod db;
 mod editor;
 pub mod error;
+pub mod handoff;
 mod mapping;
 mod mcp;
 pub mod runner;
+pub mod session;
 pub mod skills;
 mod source;
 mod sync;
@@ -103,17 +105,16 @@ pub fn run() {
             runner::acp_list_active_runs,
             runner::acp_create_run,
             runner::acp_resume_run,
-            runner::acp_get_run,
-            runner::acp_get_run_for_card,
             runner::acp_latest_run_for_card,
             runner::acp_list_updates,
-            runner::acp_has_updates,
-            runner::acp_list_runs,
+            runner::acp_load_run_history,
+            runner::acp_run_process_info,
             runner::acp_list_recent_runs,
-            runner::acp_cleanup,
             runner::acp_cancel_run,
+            runner::acp_complete_run,
             runner::acp_respond_permission,
             runner::acp_send_followup,
+            runner::acp_set_session_config,
             runner::acp_diff_main,
             runner::acp_merge,
             runner::acp_remove_worktree,
