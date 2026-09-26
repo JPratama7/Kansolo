@@ -10,6 +10,7 @@
     "npm:@solidjs/testing-library@~0.8.10": "0.8.10_solid-js@1.9.15",
     "npm:@tailwindcss/vite@^4.3.3": "4.3.3_vite@8.2.2",
     "npm:@tauri-apps/api@2": "2.11.1",
+    "npm:@tauri-apps/cli@*": "2.11.4",
     "npm:@tauri-apps/cli@2": "2.11.4",
     "npm:@thisbeyond/solid-dnd@0.2": "0.2.0_solid-js@1.9.15",
     "npm:happy-dom@^20.11.6": "20.11.10",
