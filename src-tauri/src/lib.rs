@@ -15,7 +15,12 @@ pub mod test_utils;
 mod tray;
 mod worktree;
 
+use mimalloc;
+
 use tauri::{Manager, WindowEvent};
+
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

@@ -32,6 +32,7 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 uuid = { version = "1", default-features = false, features = ["v4"] }
 agent-client-protocol = "2"
 lexopt = "0.3"
+mimalloc = "0.1.52"
 
 [profile.dev]
 opt-level = 1
