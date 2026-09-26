@@ -18,9 +18,6 @@ jobs:
           - runner: ubuntu-latest
             os-label: linux
             arch: x86_64
-          - runner: macos-13
-            os-label: macos
-            arch: x86_64
           - runner: macos-latest
             os-label: macos
             arch: aarch64
